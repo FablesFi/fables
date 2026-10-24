@@ -1,0 +1,8 @@
+# halmos config for test/halmos (pure fee libraries). Run from the repo root:
+#   FOUNDRY_SRC=src/libraries FOUNDRY_TEST=test/halmos FOUNDRY_OUT=out/halmos FOUNDRY_CACHE_PATH=cache/halmos \
+#   halmos --config test/halmos/halmos.toml --forge-build-out out/halmos
+[global]
+match-contract = "^HalmosFeeLibs$"
+# FeeRef.decayFactor's square-and-multiply runs at most 8 times; the group-mask tiling loop 6.
+loop = 12
+solver-timeout-assertion = "600s"
