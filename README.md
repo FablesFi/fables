@@ -94,7 +94,8 @@ uniswap-hooks invariants and an ERC-6909 conformance suite, adapted).
 git submodule update --init --recursive
 forge build
 forge test
-# Robinhood Chain fork tests (skipped unless set):
+# Robinhood Chain fork tests (skipped unless set; the pinned block needs an archive node,
+# otherwise add RC_FORK_BLOCK=<recent block>):
 RC_RPC_URL=<url> forge test --match-path "test/fork/**" --isolate -vv
 ```
 

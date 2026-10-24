@@ -31,8 +31,8 @@ contract RCForkTest is RCBytecodeHarness, RCForkHelpers {
         fundRC(RCAddresses.USDG, trader, 1e12);
         deal(RCAddresses.USDE, address(liq), 1e27);
         deal(RCAddresses.USDG, address(liq), 1e15);
-        deal(RCAddresses.USDE, address(this), 1e24);
-        deal(RCAddresses.USDG, address(this), 1e12);
+        deal(RCAddresses.USDE, address(this), 1e25);
+        deal(RCAddresses.USDG, address(this), 1e13);
         IERC20(RCAddresses.USDE).approve(address(swapRouter), type(uint256).max);
         IERC20(RCAddresses.USDG).approve(address(swapRouter), type(uint256).max);
     }
