@@ -197,7 +197,8 @@ abstract contract FablesFeeFull is FablesFeeEngine {
         }
     }
 
-    /// @notice Sender-free fee of a direction right now, CF included, no discount. Use it for quotes.
+    /// @notice Sender-free fee of a direction right now, CF included, no discount; a router quotes its own fee with
+    ///         `feeFor`.
     function currentFee(PoolId poolId, bool zeroForOne) external view returns (uint24) {
         (uint256 fee,) = _resolveFeeRef(poolId, zeroForOne, address(0));
         // fee <= cap < 2^24 (FeeRef)

@@ -98,6 +98,11 @@ library StableRefModel {
         return StableFeeCalculation.calculateDecayingFee(target, start, c.k, blocks);
     }
 
+    /// @notice Fables' minimum fee on top of the StablePair fee: every swap pays at least `minFee`.
+    function withMin(uint24 feeE6, uint256 minFee) internal pure returns (uint24) {
+        return minFee > feeE6 ? uint24(minFee) : feeE6;
+    }
+
     function capped(uint24 feeE6, uint24 maxFee) internal pure returns (uint24) {
         return feeE6 > maxFee ? maxFee : feeE6;
     }

@@ -5,7 +5,8 @@ import "../utils/StableTestBase.sol";
 import {StableFeeCalculation} from "../../src/libraries/StableFeeCalculation.sol";
 
 /// @notice Any-state differential: identical stored words give identical fees, reverts and state updates on StablePair,
-///         the build under test and the typed twin.
+///         the build under test and the typed twin. The state word's top 16 bits, unused by StablePair, are the Fables
+///         minimum fee: the Fables builds charge max(StablePair's fee, it) on every swap.
 abstract contract StableLiteDiffWordsBase is StableTestBase {
     using PoolIdLibrary for PoolKey;
 
@@ -173,11 +174,18 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
         revert(string.concat(what, " mismatch ", tag));
     }
 
+    /// StablePair's fee, capped, then the Fables minimum fee from the state word's top 16 bits.
+    function _fables(address sp, uint24 spFee) internal view returns (uint24) {
+        uint24 f = _capped(spFee);
+        uint256 m = _stateWord(sp) >> 240;
+        return m > f ? uint24(m) : f;
+    }
+
     function _cmpGetFee(address[3] memory P, string memory tag) internal view {
         (bool ok0, bytes memory r0) = _getFeeRaw(P[0], _keyOf(P[0]));
         if (ok0 && r0.length == 64) {
             (uint24 a, uint24 b) = abi.decode(r0, (uint24, uint24));
-            r0 = abi.encode(_capped(a), _capped(b));
+            r0 = abi.encode(_fables(P[0], a), _fables(P[0], b));
         }
         for (uint256 i = 1; i < 3; i++) {
             (bool ok, bytes memory ret) = _getFeeRaw(P[i], _keyOf(P[i]));
@@ -187,10 +195,14 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
 
     function _cmpSwap(address[3] memory P, bool zfo, string memory tag) internal {
         uint256 cfgB = _cfgWord(P[0]);
+        // the expected minimum is read before StablePair's swap writes its state (the top bits stay)
+        uint256 m = _stateWord(P[0]) >> 240;
         (bool ok0, bytes memory r0) = _swapCall(P[0], zfo);
         if (ok0 && r0.length == 96) {
             (bytes4 sel, int256 delta, uint24 w) = abi.decode(r0, (bytes4, int256, uint24));
-            r0 = abi.encode(sel, delta, (w & 0x400000) | _capped(w & 0x3fffff));
+            uint24 f = _capped(w & 0x3fffff);
+            if (m > f) f = uint24(m);
+            r0 = abi.encode(sel, delta, (w & 0x400000) | f);
         }
         uint256 s0 = _stateWord(P[0]);
         if (_cfgWord(P[0]) != cfgB) revert(string.concat("swap wrote the config word ", tag));

@@ -8,7 +8,7 @@ Unit and property tests per component.
 - `full/`: the assembly swap entry (swaps on the Robinhood Chain bytecode, properties, branch coverage).
 - `ledger/`: FablesLedgerV2 / LedgerLibV2 edges, dust, module isolation and the JIT seam.
 - `stable/`: FablesStableFee and both Stable Lite builds (flags, liquidity gate, outside LPs next to the ledger, parked
-  prices).
+  prices, reference moves and the minimum fee).
 
 ```
 forge test --match-path "test/unit/**"

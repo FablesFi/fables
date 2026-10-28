@@ -31,6 +31,8 @@ import {RangeState, UserPosition} from "../../src/base/LedgerTypesV2.sol";
 import {StableFeeCalculation} from "../../src/libraries/StableFeeCalculation.sol";
 import {DiscountLib} from "../../src/libraries/DiscountLib.sol";
 import {StableRefModel} from "../utils/StableRefModel.sol";
+import {FablesStableHookLite} from "../../src/FablesStableHookLite.sol";
+import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 import {EtchDeploy, StableBuild, Depth} from "../utils/Artifacts.sol";
 
 /// @notice Stable Lite views and admin used by the walk.
@@ -49,10 +51,14 @@ interface IStableLite {
         external;
     function revokeDiscount(PoolId[] calldata ids, address[] calldata accounts) external;
     function setDiscountFilter(PoolId poolId, uint8 seed, address[] calldata accounts) external;
+    function updateReferencePrice(PoolKey calldata key, uint160 referenceSqrtPriceX96) external;
+    function setMinimumFee(PoolKey calldata key, uint16 minimumFee) external;
+    function minimumFee(PoolId poolId) external view returns (uint16);
+    function referenceUpdatedAt(PoolId poolId) external view returns (uint256);
 }
 
-/// @notice Random walk over Stable Lite pools with fuzzed configs, checking every swap fee against the StablePair
-///         model. An outside LP adds and removes liquidity directly at random ranges and donates; the Exclusive build
+/// @notice Random walk over Stable Lite pools with fuzzed configs, reference moves and minimum fees, checking
+///         every swap fee against the StablePair model plus the minimum. An outside LP adds and removes liquidity directly at random ranges and donates; the Exclusive build
 ///         must refuse its adds.
 contract StableLiteCategoryHandler is Test {
     using PoolIdLibrary for PoolKey;
@@ -86,6 +92,7 @@ contract StableLiteCategoryHandler is Test {
     uint256 public swapsAdverse;
     uint256 public swapsCached;
     uint256 public swapsDiscounted;
+    uint256 public swapsRaised;
     uint256 public maxFee;
 
     struct Outside {
@@ -135,7 +142,7 @@ contract StableLiteCategoryHandler is Test {
     }
 
     function fuzzSelectors() external pure returns (bytes4[] memory s) {
-        s = new bytes4[](16);
+        s = new bytes4[](18);
         s[0] = this.createPool.selector;
         s[1] = this.updateConfig.selector;
         s[2] = this.swap.selector;
@@ -152,6 +159,8 @@ contract StableLiteCategoryHandler is Test {
         s[13] = this.outsideAdd.selector;
         s[14] = this.outsideRemove.selector;
         s[15] = this.donate.selector;
+        s[16] = this.setMinimum.selector;
+        s[17] = this.moveReference.selector;
     }
 
     uint256 public budget = type(uint256).max;
@@ -285,6 +294,78 @@ contract StableLiteCategoryHandler is Test {
         _checkFreshState(p, "updateConfig");
     }
 
+    /// @notice Sets a pool's minimum fee: mostly 0 or small, sometimes up to the uint16 range.
+    function setMinimum(uint256 p, uint16 m, uint8 mode) external budgeted {
+        if (keys.length == 0) return;
+        p %= keys.length;
+        if (mode % 3 == 0) m = 0;
+        else if (mode % 3 == 1) m = uint16(bound(m, 1, 200));
+        PoolId id = keys[p].toId();
+        uint16 before = hook.minimumFee(id);
+        bytes32 st = _stateHash(id);
+        (bool ok, bytes memory err) = address(hook).call(abi.encodeCall(IStableLite.setMinimumFee, (keys[p], m)));
+        _outcome("setMinimum", true, ok, err, bytes4(0));
+        if (!ok) return;
+        if (hook.minimumFee(id) != m) _violate("setMinimum: not stored");
+        if (m < before) _checkFreshState(p, "setMinimum");
+        else if (_stateHash(id) != st) _violate("setMinimum: a raise reset the fee state");
+    }
+
+    function _stateHash(PoolId id) internal view returns (bytes32) {
+        (uint40 d, uint160 sp, uint40 bn) = hook.feeState(id);
+        return keccak256(abi.encode(d, sp, bn));
+    }
+
+    /// @notice Moves a pool's reference by `ppm` of its price: inside or outside the 0.1% step, sooner or later than
+    ///         a minute after the last move.
+    function moveReference(uint256 p, uint256 ppm, uint8 mode) external budgeted {
+        if (keys.length == 0) return;
+        p %= keys.length;
+        if (mode % 2 == 0) vm.warp(block.timestamp + 60);
+        _moveReference(p, mode % 5 == 4 ? bound(ppm, 995_000, 1_005_000) : bound(ppm, 999_100, 1_000_900));
+    }
+
+    function _moveReference(uint256 p, uint256 ppm) internal {
+        PoolId id = keys[p].toId();
+        uint160 next = _scaledRef(id, ppm);
+        bytes32 kept = _keptHash(id);
+        bool soon = block.timestamp < hook.referenceUpdatedAt(id) + 60;
+        (bool ok, bytes memory err) =
+            address(hook).call(abi.encodeCall(IStableLite.updateReferencePrice, (keys[p], next)));
+        _moveOutcome(ppm, soon, ok, err);
+        if (!ok) return;
+        (,,, uint160 ref) = hook.feeConfig(id);
+        if (ref != next) _violate("moveReference: reference not stored");
+        if (_keptHash(id) != kept) _violate("moveReference: k, band, multiplier or minimum fee changed");
+        if (hook.referenceUpdatedAt(id) != block.timestamp) _violate("moveReference: time not stored");
+        _checkFreshState(p, "moveReference");
+    }
+
+    function _scaledRef(PoolId id, uint256 ppm) internal view returns (uint160) {
+        (,,, uint160 ref) = hook.feeConfig(id);
+        return uint160(FixedPointMathLib.sqrt(FixedPointMathLib.fullMulDiv(uint256(ref) * ref, ppm, 1e6)));
+    }
+
+    function _keptHash(PoolId id) internal view returns (bytes32) {
+        (uint24 k, uint24 opt, uint8 tm,) = hook.feeConfig(id);
+        return keccak256(abi.encode(k, opt, tm, hook.minimumFee(id)));
+    }
+
+    /// @dev Within a guard band of the 0.1% bound either outcome is fine (two sqrt roundings), but only for that error.
+    function _moveOutcome(uint256 ppm, bool soon, bool ok, bytes memory err) internal {
+        bytes4 tooLarge = FablesStableHookLite.ReferenceStepTooLarge.selector;
+        bool edge = (ppm >= 998_999 && ppm <= 999_001) || (ppm >= 1_000_999 && ppm <= 1_001_002);
+        if (edge && !soon) {
+            if (ok) landed["moveReference"]++;
+            else refused["moveReference"]++;
+            if (!ok && _sel(err) != tooLarge) _violate("moveReference: refused at the edge with an unexpected error");
+            return;
+        }
+        bool tooFar = ppm < 999_001 || ppm > 1_000_999;
+        bytes4 expected = soon ? FablesStableHookLite.ReferenceUpdateTooSoon.selector : tooLarge;
+        _outcome("moveReference", !soon && !tooFar, ok, err, expected);
+    }
+
     function _checkFreshState(uint256 p, string memory where) internal {
         (uint40 d, uint160 sp, uint40 bn) = hook.feeState(keys[p].toId());
         if (d != StableRefModel.UNDEF || sp != 0 || bn != block.number) {
@@ -306,6 +387,7 @@ contract StableLiteCategoryHandler is Test {
         bool z;
         StableRefModel.Out o;
         uint24 expected;
+        uint256 minFee;
     }
 
     function _swap(uint256 p, uint256 r, bool z, uint256 amt, bool exactOut) internal {
@@ -361,7 +443,8 @@ contract StableLiteCategoryHandler is Test {
         (uint160 live,,,) = manager.getSlot0(id);
         x.o = StableRefModel.quote(c, s, live, block.number, x.z);
         x.o.feeE6 = StableRefModel.capped(x.o.feeE6, FablesLedgerV2(payable(address(hook))).maxFee(id));
-        x.expected = _discounted(id, x);
+        x.minFee = hook.minimumFee(id);
+        x.expected = StableRefModel.withMin(_discounted(id, x), x.minFee);
     }
 
     function _discounted(PoolId id, Ctx memory x) internal view returns (uint24) {
@@ -389,15 +472,20 @@ contract StableLiteCategoryHandler is Test {
                 string.concat("stable swap: charged != model: ", vm.toString(fee), " vs ", vm.toString(x.expected))
             );
         }
-        if (fee > x.o.feeE6) _violate("stable swap: the whitelist raised the fee");
+        uint24 floored = StableRefModel.withMin(x.o.feeE6, x.minFee);
+        if (fee > floored) _violate("stable swap: the whitelist raised the fee");
         if (2 * fee < x.o.feeE6) _violate("stable swap: the whitelist cut more than 50%");
+        if (fee < x.minFee) _violate("stable swap: a swap paid below the minimum");
         if (fee > 100_000) _violate("stable swap: fee above the 10% cap");
         if (x.o.outside) swapsOutside++;
         if (!x.o.isNewBlock) swapsCached++;
         if (fee < x.o.feeE6) swapsDiscounted++;
+        if (fee > x.o.feeE6) swapsRaised++;
         if (x.o.adverse) {
             swapsAdverse++;
-            if (fee != 0) _violate("stable swap: the side moving away from the reference outside the band paid a fee");
+            if (fee != x.minFee) {
+                _violate("stable swap: the side moving away from the reference outside the band paid != the minimum");
+            }
         }
         (uint40 d, uint160 sp, uint40 bn) = hook.feeState(x.key.toId());
         if (d != x.o.next.decayingFeeE12 || sp != x.o.next.sqrtAmm || bn != x.o.next.blockNumber) {
@@ -674,7 +762,8 @@ abstract contract StableLiteCategoryInvariantBase is Test, Deployers {
                     StableRefModel.Config(k, opt, tm, ref), StableRefModel.State(d, sp, bn), live, block.number, s == 0
                 );
                 uint24 capped = StableRefModel.capped(o.feeE6, FablesLedgerV2(payable(hookAddr)).maxFee(id));
-                assertEq(IStableLite(hookAddr).currentFee(id, s == 0), capped, "currentFee != StablePair model");
+                capped = StableRefModel.withMin(capped, IStableLite(hookAddr).minimumFee(id));
+                assertEq(IStableLite(hookAddr).currentFee(id, s == 0), capped, "currentFee != StablePair model + min");
                 if (o.adverse) assertEq(o.feeE6, 0, "adverse side priced above 0");
             }
         }
@@ -705,7 +794,7 @@ abstract contract StableLiteCategoryInvariantBase is Test, Deployers {
     }
 
     function afterInvariant() public view {
-        string[12] memory names = [
+        string[14] memory names = [
             "createPool",
             "updateConfig",
             "swap",
@@ -717,7 +806,9 @@ abstract contract StableLiteCategoryInvariantBase is Test, Deployers {
             "discountFilter",
             "outsideAdd",
             "outsideRemove",
-            "donate"
+            "donate",
+            "setMinimum",
+            "moveReference"
         ];
         for (uint256 i = 0; i < names.length; ++i) {
             (uint256 l, uint256 r) = handler.counts(bytes32(bytes(names[i])));
@@ -726,6 +817,7 @@ abstract contract StableLiteCategoryInvariantBase is Test, Deployers {
         console.log("pools", handler.poolCount(), "max fee", handler.maxFee());
         console.log("swaps outside / adverse", handler.swapsOutside(), handler.swapsAdverse());
         console.log("swaps cached-price / discounted", handler.swapsCached(), handler.swapsDiscounted());
+        console.log("swaps raised to the minimum fee", handler.swapsRaised());
     }
 
     function test_scriptedWalkReachesEveryRegime() public {
@@ -744,6 +836,14 @@ abstract contract StableLiteCategoryInvariantBase is Test, Deployers {
             handler.swap(p, 0, true, 1e20, false);
             handler.updateConfig(p, StableLiteCategoryHandler.Cfg(1, 0, 100, 0, 0), 1);
             handler.swap(p, 1, true, 1e20, false);
+            handler.setMinimum(p, 150, 1);
+            handler.swap(p, 1, true, 1e20, false);
+            handler.swap(p, 2, false, 1e20, false);
+            handler.moveReference(p, 999_500, 0);
+            handler.moveReference(p, 1_000_400, 1);
+            handler.moveReference(p, 1_004_000, 4);
+            handler.swap(p, 0, p % 2 == 0, 1e20, false);
+            handler.setMinimum(p, 0, 0);
             handler.deposit(p, 1, 1, 1e21);
             handler.withdraw(p, 2, 0, 1e20);
             handler.claim(p, 0, 0);
@@ -760,6 +860,10 @@ abstract contract StableLiteCategoryInvariantBase is Test, Deployers {
         assertGt(handler.swapsAdverse(), 0, "no adverse-side swap");
         assertGt(handler.swapsCached(), 0, "no same-block swap");
         assertGt(handler.swapsDiscounted(), 0, "no discounted swap");
+        assertGt(handler.swapsRaised(), 0, "no swap raised to the minimum fee");
+        (uint256 movesLanded, uint256 movesRefused) = handler.counts("moveReference");
+        assertGt(movesLanded, 0, "no reference move landed");
+        assertGt(movesRefused, 0, "no reference move refused");
         (uint256 addsLanded, uint256 addsRefused) = handler.counts("outsideAdd");
         if (_exclusive()) assertEq(addsLanded, 0, "a direct add landed on the Exclusive build");
         else assertGt(handler.outsideCount(), 0, "no outside position left open");

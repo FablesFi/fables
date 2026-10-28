@@ -8,11 +8,13 @@ import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
-import {FablesStableFee} from "./base/FablesStableFee.sol";
+import {FablesStableFee, StableFeeConfig} from "./base/FablesStableFee.sol";
 import {FablesLedgerV2} from "./base/FablesLedgerV2.sol";
+import {StableFeeCalculation} from "./libraries/StableFeeCalculation.sol";
 
 /// @title FablesStableHookLite
-/// @notice Stable-pair hook: StablePair fee with whitelist discount and the LP ledger.
+/// @notice Stable-pair hook: StablePair fee with whitelist discount and the LP ledger. The reference price moves in
+///         bounded steps and every swap can carry a minimum fee.
 /// @dev Flags 0x2080 (beforeInitialize | beforeSwap). The swap entry is an assembly `fallback` around `_stableFee`.
 contract FablesStableHookLite is FablesStableFee, FablesLedgerV2 {
     using PoolIdLibrary for PoolKey;
@@ -25,8 +27,59 @@ contract FablesStableHookLite is FablesStableFee, FablesLedgerV2 {
     uint256 private constant SEL_EXTSLOAD = 0x1e2eaeaf;
     uint256 private constant POOLS_SLOT = 6;
 
+    /// @notice Largest reference move per `updateReferencePrice` call, in price, 1e6 precision (1_000 = 0.1%).
+    uint256 public constant MAX_REFERENCE_STEP_E6 = 1_000;
+    /// @notice Minimum time between two reference moves on a pool, in seconds.
+    uint256 public constant REFERENCE_UPDATE_INTERVAL = 60;
+    uint256 internal constant MIN_REFERENCE_RATIO_X96 = Q96 * (1e6 - MAX_REFERENCE_STEP_E6) / 1e6;
+
+    /// @notice Time of a pool's last reference move (0 = never moved).
+    mapping(PoolId poolId => uint256 timestamp) public referenceUpdatedAt;
+
+    error ReferenceStepTooLarge();
+    error ReferenceUpdateTooSoon();
+
+    event MinimumFeeSet(PoolId indexed poolId, uint16 minimumFee);
+
     constructor(IPoolManager poolManager_, address authority_) FablesStableFee(poolManager_, authority_) {
         Hooks.validateHookPermissions(IHooks(address(this)), _hookPermissions());
+    }
+
+    /// @notice Moves a pool's reference price by at most `MAX_REFERENCE_STEP_E6`, at most once per
+    ///         `REFERENCE_UPDATE_INTERVAL`, and resets the fee state.
+    function updateReferencePrice(PoolKey calldata key, uint160 referenceSqrtPriceX96) external restricted {
+        PoolId poolId = key.toId();
+        _checkPoolInitialized(poolId);
+        // forge-lint: disable-next-line(block-timestamp)
+        if (block.timestamp < referenceUpdatedAt[poolId] + REFERENCE_UPDATE_INTERVAL) revert ReferenceUpdateTooSoon();
+        (uint24 k, uint24 optimalFeeE6, uint8 targetMultiplier, uint160 previous) = feeConfig(poolId);
+        _validateReferenceSqrtPriceX96(referenceSqrtPriceX96);
+        if (StableFeeCalculation.calculatePriceRatioX96(referenceSqrtPriceX96, previous) < MIN_REFERENCE_RATIO_X96) {
+            revert ReferenceStepTooLarge();
+        }
+        referenceUpdatedAt[poolId] = block.timestamp;
+        _resetFeeState(poolId);
+        _writeFeeConfig(poolId, k, optimalFeeE6, targetMultiplier, referenceSqrtPriceX96);
+        emit FeeConfigUpdated(poolId, StableFeeConfig(k, optimalFeeE6, targetMultiplier, referenceSqrtPriceX96));
+    }
+
+    /// @notice Sets a pool's minimum fee in pips: every swap pays at least it, no discount goes below it.
+    /// @dev Lowering it resets the fee state (the falling fee restarts); 0 restores StablePair's fee.
+    function setMinimumFee(PoolKey calldata key, uint16 minimumFee_) external restricted {
+        PoolId poolId = key.toId();
+        _checkPoolInitialized(poolId);
+        StableWords storage w = _words[poolId];
+        uint256 st = w.state;
+        w.state = (st & ~STATE_MIN_FEE_MASK) | (uint256(minimumFee_) << STATE_MIN_FEE_SHIFT);
+        if (minimumFee_ < st >> STATE_MIN_FEE_SHIFT) _resetFeeState(poolId);
+        emit MinimumFeeSet(poolId, minimumFee_);
+    }
+
+    /// @notice A pool's minimum fee in pips.
+    function minimumFee(PoolId poolId) external view returns (uint16) {
+        // the top 16 bits of the state word
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return uint16(_words[poolId].state >> STATE_MIN_FEE_SHIFT);
     }
 
     /// @notice beforeSwap entry; reverts NotPoolManager() for other callers, HookNotImplemented() for other selectors.

@@ -22,7 +22,8 @@ struct StableFeeConfig {
     uint160 referenceSqrtPriceX96;
 }
 
-/// @notice Fee state, written on the first swap of each clock block and reset by every config write.
+/// @notice Fee state, written on the first swap of each clock block and reset by every config write (the minimum
+///         fee, kept in the same word, is not part of it).
 struct StableFeeState {
     uint40 decayingFeeE12;
     uint160 sqrtAmmPriceX96;
@@ -30,15 +31,16 @@ struct StableFeeState {
 }
 
 /// @title FablesStableFee
-/// @notice Uniswap StablePair's fee (v4-hooks-public @ e4eabe5, MIT) plus a per-pool whitelist discount applied after
-///         it. Fees in pips.
+/// @notice Uniswap StablePair's fee (v4-hooks-public @ e4eabe5, MIT) plus a per-pool minimum fee and a per-pool
+///         whitelist discount applied after them, never below that minimum. Fees in pips.
 /// @dev Same fee math, revert bytes and views as StablePair, except: the fee charged is capped at `STABLE_MAX_FEE`,
 ///      the formula reads the price clamped to within 10% of the reference, `targetMultiplier` >= 1, pools are
-///      created only by `configureStablePool` (reference write-once), roles via AccessManager. Two words per pool;
-///      bits below 216 (cfg) and 240 (state) follow StablePair's struct packing:
+///      created only by `configureStablePool` (the reference then moves only through the build's bounded
+///      `updateReferencePrice`), every swap pays at least the pool's minimum fee (default 0: StablePair's fee),
+///      roles via AccessManager. Two words per pool; bits below 216 (cfg) and 240 (state) follow StablePair's packing:
 ///        cfg    k [0,24) | optimalFeeE6 [24,48) | targetMultiplier [48,56) | referenceSqrtPriceX96 [56,216)
 ///               | bloom32 [216,248) | seed8 [248,256)
-///        state  decayingFeeE12 [0,40) | sqrtAmmPriceX96 [40,200) | blockNumber [200,240) | spare [240,256)
+///        state  decayingFeeE12 [0,40) | sqrtAmmPriceX96 [40,200) | blockNumber [200,240) | minimumFee [240,256)
 abstract contract FablesStableFee is FablesHookCore {
     using LPFeeLibrary for uint24;
     using PoolIdLibrary for PoolKey;
@@ -103,7 +105,8 @@ abstract contract FablesStableFee is FablesHookCore {
     uint256 internal constant STATE_FEE_SHIFT = 0;
     uint256 internal constant STATE_PRICE_SHIFT = 40;
     uint256 internal constant STATE_BLOCK_SHIFT = 200;
-    uint256 internal constant STATE_SPARE_MASK = ~((uint256(1) << 240) - 1);
+    uint256 internal constant STATE_MIN_FEE_SHIFT = 240;
+    uint256 internal constant STATE_MIN_FEE_MASK = ~((uint256(1) << STATE_MIN_FEE_SHIFT) - 1);
 
     /// @notice True: the clock is `ArbSys(0x64).arbBlockNumber()` (Arbitrum/Orbit chains); false: `block.number`.
     bool public immutable USE_ARB_SYS;
@@ -178,7 +181,7 @@ abstract contract FablesStableFee is FablesHookCore {
         emit PoolInitialized(key, sqrtPriceX96, config);
     }
 
-    /// @notice Updates k, optimalFeeE6 and targetMultiplier (the reference is fixed) and resets the fee state.
+    /// @notice Updates k, optimalFeeE6 and targetMultiplier (not the reference) and resets the fee state.
     function updateFeeConfig(PoolKey calldata key, uint24 k, uint24 optimalFeeE6, uint8 targetMultiplier)
         external
         restricted
@@ -219,8 +222,8 @@ abstract contract FablesStableFee is FablesHookCore {
         PoolId poolId = key.toId();
         _checkPoolInitialized(poolId);
         (uint256 cfg, uint256 st, uint256 sqrtAmmPriceX96, bool isNewBlock, uint256 clock) = _viewState(poolId);
-        (uint256 feeE12,) = _getFee(cfg, st, sqrtAmmPriceX96, isNewBlock, zeroForOne, clock);
-        return _discounted(_toPips(feeE12), cfg, poolId, zeroForOne, sender);
+        (uint256 feeE12, uint256 stateLow) = _getFee(cfg, st, sqrtAmmPriceX96, isNewBlock, zeroForOne, clock);
+        return _discounted(poolId, sender, zeroForOne, cfg, stateLow, _toPips(feeE12));
     }
 
     /// @notice StablePair's `feeConfig`.
@@ -336,12 +339,12 @@ abstract contract FablesStableFee is FablesHookCore {
         (uint256 lpFeeE12, uint256 stateLow) = _getFee(cfg, st, sqrtAmmPriceX96, isNewBlock, zeroForOne, clock);
 
         if (isNewBlock) {
-            w.state = (st & STATE_SPARE_MASK) | stateLow | ((clock & MASK40) << STATE_BLOCK_SHIFT);
+            w.state = (st & STATE_MIN_FEE_MASK) | stateLow | ((clock & MASK40) << STATE_BLOCK_SHIFT);
         }
 
         return (cfg >> CFG_BLOOM_SHIFT) == 0
             ? _toPips(lpFeeE12)
-            : _discounted(_toPips(lpFeeE12), cfg, poolId, zeroForOne, sender);
+            : _discounted(poolId, sender, zeroForOne, cfg, stateLow, _toPips(lpFeeE12));
     }
 
     /// StablePair's `toFeeE6` (pips, rounded up) capped at `STABLE_MAX_FEE`; the decay state stays uncapped.
@@ -381,9 +384,11 @@ abstract contract FablesStableFee is FablesHookCore {
         (sqrtAmmPriceX96, isNewBlock) = _loadPrice(poolId, st, clock, 0);
     }
 
-    /// StablePairHook._getFee on the packed words, same statements and order, at the price clamped to the fee window.
-    /// @return lpFeeE12 The fee.
-    /// @return stateLow State bits [0, 200) to persist: the decaying fee and the price the formula read.
+    /// StablePairHook._getFee on the packed words, same statements and order, at the price clamped to the fee window,
+    /// then the minimum fee.
+    /// @return lpFeeE12 The fee, at least the pool's minimum fee.
+    /// @return stateLow State bits [0, 200) to persist (the decaying fee and the price the formula read) and the
+    ///         pool's minimum fee in bits [240, 256), where it is stored.
     function _getFee(uint256 cfg, uint256 st, uint256 sqrtAmmPriceX96, bool isNewBlock, bool zeroForOne, uint256 clock)
         internal
         pure
@@ -431,6 +436,16 @@ abstract contract FablesStableFee is FablesHookCore {
         }
         // decaying fee [0, 40) (always < 2^40), price [40, 200)
         stateLow = (stateLow & MASK40) | (sqrtAmmPriceX96 << STATE_PRICE_SHIFT);
+        // every swap pays at least the pool's minimum fee, also returned in its stored bits as the discount's floor
+        uint256 minFee = st >> STATE_MIN_FEE_SHIFT;
+        if (minFee != 0) {
+            stateLow |= st & STATE_MIN_FEE_MASK;
+            // minFee < 2^16
+            unchecked {
+                minFee *= StableFeeCalculation.ONE_E6;
+            }
+            if (lpFeeE12 < minFee) lpFeeE12 = minFee;
+        }
     }
 
     function _calculateDecayingFee(
@@ -492,8 +507,9 @@ abstract contract FablesStableFee is FablesHookCore {
         }
     }
 
-    /// The whitelist discount: never reverts or raises a fee, keeps 0 at 0; reads the entry only on a Bloom hit.
-    function _discounted(uint24 fee, uint256 cfg, PoolId poolId, bool zeroForOne, address sender)
+    /// The whitelist discount: never reverts or raises a fee, keeps 0 at 0; reads the entry only on a Bloom hit. Its
+    /// floor is the pool's minimum fee, which `_getFee` returns in `stateLow`.
+    function _discounted(PoolId poolId, address sender, bool zeroForOne, uint256 cfg, uint256 stateLow, uint24 fee)
         internal
         view
         returns (uint24)
@@ -504,7 +520,7 @@ abstract contract FablesStableFee is FablesHookCore {
         if (e == 0) return fee;
         // fee < 2^24 and the result is <= fee: the cast cannot truncate
         // forge-lint: disable-next-line(unsafe-typecast)
-        return uint24(DiscountLib.applyEntry(fee, 0, e, zeroForOne, block.timestamp));
+        return uint24(DiscountLib.applyEntry(fee, stateLow >> STATE_MIN_FEE_SHIFT, e, zeroForOne, block.timestamp));
     }
 
     function _referenceOf(PoolId poolId) internal view returns (uint256) {
@@ -531,7 +547,7 @@ abstract contract FablesStableFee is FablesHookCore {
     /// StableFeeConfiguration._resetFeeState: UNDEFINED fee, current clock, zero cached price (next swap reads fresh).
     function _resetFeeState(PoolId poolId) internal {
         StableWords storage w = _words[poolId];
-        w.state = (w.state & STATE_SPARE_MASK) | (StableFeeCalculation.UNDEFINED_DECAYING_FEE_E12 << STATE_FEE_SHIFT)
+        w.state = (w.state & STATE_MIN_FEE_MASK) | (StableFeeCalculation.UNDEFINED_DECAYING_FEE_E12 << STATE_FEE_SHIFT)
             | ((_getBlockNumberish() & MASK40) << STATE_BLOCK_SHIFT);
     }
 

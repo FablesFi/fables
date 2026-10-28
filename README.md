@@ -74,12 +74,18 @@ Role-to-function bindings are AccessManager configuration set at deployment; ADM
   are not stopped by a pause.
 - **Continuation fee:** a soft surcharge that a trader can avoid by first trading back. Its memory ends after 255 s, so a fade
   time above 51 s stops abruptly instead of fading out.
-- **Discounts** are keyed on the PoolManager caller (the router) and are not visible to quoters.
+- **Discounts** are keyed on the PoolManager caller (the router). `currentFee` is the fee without a discount; a quoter
+  gets the exact fee a router pays with `feeFor(poolId, zeroForOne, router)` (stable builds: `feeFor(key, zeroForOne,
+  router)`), where `router` is the contract that calls `PoolManager.swap`.
 - **Claim fee:** charged at the lowest rate in force since a range's last sync.
-- **Stable fee** (Uniswap's StablePair design): each pool has a fixed reference price, and swaps that move the price away from it
+- **Stable fee** (Uniswap's StablePair design): each pool has a reference price, and swaps that move the price away from it
   pay less than swaps that move it back. Inside the pool's optimal band both pay a small fee. Outside it, swaps away pay 0 and
-  swaps back pay a fee that starts high and falls every block. Our changes: the fee is capped at 10%, and a price more than 10%
-  from the reference is treated as exactly 10% away.
+  swaps back pay a fee that starts high and falls every block. Our changes: the fee is capped at 10%; a price more than 10%
+  from the reference is treated as exactly 10% away; the reference can move by at most 0.1% per minute
+  (`updateReferencePrice`, which restarts the falling fee); and a pool can set a minimum fee that every swap pays
+  (`setMinimumFee`, default 0 = StablePair's fee; no discount goes below it; lowering it restarts the falling fee).
+  Quote with `getFee`, `currentFee` or `feeFor`: an off-chain StablePair model must also apply the minimum and treat a
+  lowering `MinimumFeeSet` as a fee-state reset, like `FeeConfigUpdated`.
 - **LP receipts (ERC-6909):** a transfer of 0 reverts; staked receipts must be unstaked before they move (transferable =
   `balanceOf - userPosition(...).staked`); transfers stop during a pause and during any ledger call (for example inside a native-ETH refund), approvals do
   not; a transfer to `address(0)` succeeds and those shares can no longer be withdrawn.

@@ -220,6 +220,17 @@ abstract contract StableTestBase is HooklessBaseline {
         else IStablePair(h).updateFeeConfig(key.toId(), c);
     }
 
+    /// @notice Moves the reference: Fables' bounded `updateReferencePrice`, StablePair's `updateFeeConfig` with the rest
+    ///         of the config unchanged. Both reset the fee state.
+    function _moveRef(address h, PoolKey memory key, uint160 ref) internal {
+        if (isFables[h]) {
+            FablesStableHookLite(h).updateReferencePrice(key, ref);
+        } else {
+            (uint24 k, uint24 opt, uint8 tm,) = IStablePair(h).feeConfig(key.toId());
+            IStablePair(h).updateFeeConfig(key.toId(), StableFeeConfig(k, opt, tm, ref));
+        }
+    }
+
     function _addLiq(address h, PoolKey memory key, int24 lo, int24 hi, uint128 L) internal {
         if (isFables[h]) {
             FablesStableHookLite(h).deposit(key, lo, hi, L, type(uint128).max, type(uint128).max, block.timestamp);

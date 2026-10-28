@@ -3,9 +3,11 @@ pragma solidity ^0.8.26;
 
 import "../utils/StableTestBase.sol";
 import {StableFeeCalculation} from "../../src/libraries/StableFeeCalculation.sol";
+import {FixedPointMathLib} from "solady/utils/FixedPointMathLib.sol";
 
 /// @notice Real-swap differential: a Stable Lite build and its typed twin against the deployed StablePair bytecode. On
-///         the open build, part of the liquidity is added directly (around the ledger) in all three pools.
+///         the open build, part of the liquidity is added directly (around the ledger) in all three pools. Reference
+///         moves go through Fables' bounded `updateReferencePrice` and StablePair's `updateFeeConfig`.
 abstract contract StableLiteVsStablePairBase is StableTestBase {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -52,6 +54,7 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
         uint256 towardKeep;
         uint256 clampTarget;
         uint256 configs;
+        uint256 refMoves;
         uint256 liqChanges;
         uint256 exactOut;
         uint256 cappedStops;
@@ -129,6 +132,7 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
             T.towardKeep += R.towardKeep;
             T.clampTarget += R.clampTarget;
             T.configs += R.configs;
+            T.refMoves += R.refMoves;
             T.liqChanges += R.liqChanges;
             T.directPos += R.directPos;
             T.exactOut += R.exactOut;
@@ -147,6 +151,7 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
         assertGt(T.movedAway, 0);
         assertGt(T.towardKeep, 0);
         assertGt(T.configs, 0);
+        assertGt(T.refMoves, 0);
         assertGt(T.liqChanges, 0);
         assertGt(T.exactOut, 0);
         assertGt(T.mode, 0);
@@ -170,8 +175,9 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
             uint256 a = x % 100;
             if (a < 55) _swapStep(R, x);
             else if (a < 92) _advance(R, _gap(x >> 8));
-            else if (a < 95) _advance(R, 61 + (x >> 8) % 5000);
-            else if (a < 98) _configStep(R, x);
+            else if (a < 94) _advance(R, 61 + (x >> 8) % 5000);
+            else if (a < 96) _configStep(R, x);
+            else if (a < 98) _refStep(R, x);
             else _liqStep(R, x);
             if (R.stop) break;
         }
@@ -232,6 +238,8 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
                 vm.toString(T.clampTarget),
                 "|configResets=",
                 vm.toString(T.configs),
+                "|referenceMoves=",
+                vm.toString(T.refMoves),
                 "|liquidityChanges=",
                 vm.toString(T.liqChanges),
                 "|directPositions=",
@@ -358,6 +366,19 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
         }
         R.configs++;
         _cmpState(R, "config");
+    }
+
+    /// @dev A reference move within the 0.1% step, a minute after the last one.
+    function _refStep(Run memory R, uint256 x) internal {
+        (,,, uint160 ref) = IStablePair(R.h[0]).feeConfig(R.id[0]);
+        uint256 ppm = 999_001 + (x >> 8) % 1_999;
+        uint160 next = uint160(FixedPointMathLib.sqrt(FixedPointMathLib.fullMulDiv(uint256(ref) * ref, ppm, 1e6)));
+        vm.warp(block.timestamp + 60);
+        for (uint256 i; i < N; i++) {
+            _moveRef(R.h[i], R.k[i], next);
+        }
+        R.refMoves++;
+        _cmpState(R, "reference move");
     }
 
     function addLiqExt(address h, PoolKey calldata key, int24 lo, int24 hi, uint128 L, bool direct) external {

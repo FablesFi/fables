@@ -116,7 +116,7 @@ abstract contract StableFeeConfigBase is Test, Deployers {
         assertEq(k, K07 / 2);
         assertEq(opt, 80);
         assertEq(tm, 50);
-        assertEq(ref, SQRT_PRICE_1_1, "reference is write-once");
+        assertEq(ref, SQRT_PRICE_1_1, "updateFeeConfig keeps the reference");
         (, uint160 cached, uint40 blockNumber) = hook.feeState(poolId);
         assertEq(cached, 0, "a config write resets the cached price");
         assertEq(blockNumber, block.number);
