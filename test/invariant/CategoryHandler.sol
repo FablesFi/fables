@@ -254,22 +254,30 @@ contract CategoryHandler is Test {
 
     function poke(uint256 p, uint24 f0, uint24 f1, uint40 ttl, uint8 mode) external budgeted {
         p %= NPOOLS;
-        PokeIn memory q;
-        uint256 w = _engine().poolWord(ids[p]);
-        uint256 ceiling = _ceiling(p, w);
         mode %= 3;
-        if (mode == 0) {
-            q = PokeIn(uint24(bound(f0, 0, 120_000)), uint24(bound(f1, 0, 120_000)), uint40(bound(ttl, 0, 80 hours)));
-        } else {
-            q.f0 = uint24(bound(f0, w.floor() > 0 ? w.floor() : 1, ceiling < 1 ? 1 : ceiling));
-            q.f1 = uint24(bound(f1, w.floor() > 0 ? w.floor() : 1, ceiling < 1 ? 1 : ceiling));
-            if (mode == 2) {
-                if (f0 % 2 == 0) q.f0 = 0;
-                else q.f1 = 0;
-            }
-            q.ttl = uint40(bound(ttl, 1, 72 hours));
-        }
+        PokeIn memory q = mode == 0
+            ? PokeIn(uint24(bound(f0, 0, 120_000)), uint24(bound(f1, 0, 120_000)), uint40(bound(ttl, 0, 80 hours)))
+            : _inBoundsPoke(p, f0, f1, ttl, mode == 2);
         _poke(p, q);
+    }
+
+    /// A poke inside [floor, ceiling]; `oneSide` zeroes one side (picked by `f0`'s parity).
+    function _inBoundsPoke(uint256 p, uint24 f0, uint24 f1, uint40 ttl, bool oneSide)
+        internal
+        view
+        returns (PokeIn memory q)
+    {
+        uint256 w = _engine().poolWord(ids[p]);
+        uint256 lo = w.floor() > 0 ? w.floor() : 1;
+        uint256 ceiling = _ceiling(p, w);
+        uint256 hi = ceiling < 1 ? 1 : ceiling;
+        q.f0 = uint24(bound(f0, lo, hi));
+        q.f1 = uint24(bound(f1, lo, hi));
+        if (oneSide) {
+            if (f0 % 2 == 0) q.f0 = 0;
+            else q.f1 = 0;
+        }
+        q.ttl = uint40(bound(ttl, 1, 72 hours));
     }
 
     function pokeRaise(uint256 p, uint24 d0, uint24 d1, uint40 ttl) external budgeted {

@@ -38,6 +38,37 @@ src/
   vendor/solady/                              Solady FixedPointMathLib (verbatim, MIT)
 ```
 
+## Audit scope
+
+All of `src/` except the verbatim third-party files: 2,784 lines of code (comments and blank lines removed) in 18 files.
+
+| file | nSLOC |
+|---|---:|
+| `src/base/FablesLedgerV2.sol` | 619 |
+| `src/base/FablesStableFee.sol` | 467 |
+| `src/libraries/LedgerLibV2.sol` | 457 |
+| `src/base/FablesFeeEngine.sol` | 335 |
+| `src/base/FablesFeeFull.sol` (assembly `beforeSwap` entry) | 177 |
+| `src/libraries/FeeRef.sol` | 163 |
+| `src/libraries/PoolWordLib.sol` | 112 |
+| `src/FablesStableHookLite.sol` (assembly swap entry) | 109 |
+| `src/libraries/DiscountLib.sol` | 89 |
+| `src/base/LedgerTypesV2.sol` | 82 |
+| `src/base/FablesNativeETHV2.sol` | 65 |
+| `src/FablesHookETH.sol` | 22 |
+| `src/base/FablesHookCore.sol` | 21 |
+| `src/FablesHookETHExclusive.sol` | 18 |
+| `src/base/FablesExclusiveLiquidityV2.sol` | 17 |
+| `src/FablesHookExclusive.sol` | 12 |
+| `src/FablesStableHookLiteExclusive.sol` | 12 |
+| `src/FablesHook.sol` | 7 |
+
+Identity check only (verbatim copies, MIT): `src/libraries/StableFeeCalculation.sol` (91 nSLOC, Uniswap
+v4-hooks-public @ e4eabe5) and `src/vendor/solady/` (Solady FixedPointMathLib v0.1.26).
+
+Out of scope: `test/`, `lib/` (Uniswap v4 core, OpenZeppelin, forge-std), the external contracts the ledger is wired to
+(the ve(3,3) distributor, ballot gate and fee sink), deployment scripts and the off-chain keeper.
+
 ## Roles
 
 Access control is an OpenZeppelin `AccessManager`. Hooks are immutable (no proxy, no upgrade).
@@ -50,6 +81,7 @@ Access control is an OpenZeppelin `AccessManager`. Hooks are immutable (no proxy
 | DISCOUNT_ADMIN | list senders for a discount that never raises a fee or goes below the floor | raise any fee |
 | REVENUE_OPS | set the claim fee, at most 20% of LP fees | touch principal |
 | SEEDER | initialize a pool the admin has configured (FablesHook builds), at the price it passes | configure pools or change existing ones |
+| STABLE_KEEPER | on the stable builds: move a pool's reference by at most 0.1% per minute; set its minimum fee (at most 65,535 pips) | move funds or change any other setting |
 
 Role-to-function bindings are AccessManager configuration set at deployment; ADMIN can change them.
 
@@ -103,7 +135,14 @@ forge test
 # Robinhood Chain fork tests (skipped unless set; the pinned block needs an archive node,
 # otherwise add RC_FORK_BLOCK=<recent block>):
 RC_RPC_URL=<url> forge test --match-path "test/fork/**" --isolate -vv
+# coverage (plain `forge coverage` turns the optimizer off, which the assembly builds cannot compile; the excluded tests
+# check gas budgets or run near the block gas limit, both inflated by coverage instrumentation):
+forge coverage --ir-minimum --no-match-test "test_gas_|test_fee1pip_conservationHoldsAcrossMicroCycles"
 ```
+
+The coverage tool does not attribute inline assembly, so it under-reports `src/base/FablesFeeFull.sol` and
+`src/FablesStableHookLite.sol` (their assembly swap entries are checked against Solidity twins by `test/differential`)
+and the verbatim `StableFeeCalculation.sol` and `vendor/` files.
 
 Compiler: solc 0.8.26, EVM cancun, optimizer 200 runs, `bytecode_hash = "none"`.
 
