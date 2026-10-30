@@ -96,7 +96,7 @@ abstract contract FullCycleBase is RCBytecodeHarness {
         if (stable) return;
         s = new string[](2);
         s[0] = "pokeFee(bytes32,uint24,uint24,uint40)";
-        s[1] = "setCFActive(bytes32,bool)";
+        s[1] = "setCFActive(bytes32,bool,int24,int24,uint256)";
         _bind(hook, s, Roles.FEE_POKER);
         s = new string[](1);
         s[0] = "initializePool((address,address,uint24,int24,address),uint160)";

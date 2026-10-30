@@ -218,7 +218,7 @@ contract FullSwapsTest is RCBytecodeHarness {
 
     function test_cfContinuationChargesTheContinuingSide() public {
         hook.configureCF(id1, 0, 256, 2_500, 0, 60, 1);
-        hook.setCFActive(id1, true);
+        hook.setCFActive(id1, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         (, int24 tick0,,) = slot0(id1);
         assertEq(_urSwapChecked(k1, true, BIG, true), BASE, "first swap at the anchor pays the base");
         (, int24 tick1,,) = slot0(id1);
@@ -234,18 +234,18 @@ contract FullSwapsTest is RCBytecodeHarness {
 
     function test_cfReverseChargesTheReturningSide() public {
         hook.configureCF(id1, 1, 256, 2_500, 0, 60, 1);
-        hook.setCFActive(id1, true);
+        hook.setCFActive(id1, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         assertEq(_urSwapChecked(k1, true, BIG, true), BASE, "first swap at the anchor");
         vm.warp(block.timestamp + 1);
         assertEq(_urSwapChecked(k1, false, SMALL, true), BASE + 2_500, "moving BACK toward the anchor is taxed");
         assertEq(_urSwapChecked(k1, true, SMALL, true), BASE, "continuing is free in reverse mode");
-        hook.setCFActive(id1, false);
+        hook.setCFActive(id1, false, 0, 0, 0);
         assertEq(_urSwapChecked(k1, false, SMALL, true), BASE);
     }
 
     function test_cfKillAndDiscountStackAsSpecified() public {
         hook.configureCF(id1, 0, 256, 2_500, 0, 60, 1);
-        hook.setCFActive(id1, true);
+        hook.setCFActive(id1, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         hook.setDiscount(_ids1(), UR_ADDR, 5_000, 0, 3, uint40(block.timestamp + 1 days));
         swapUR(k1, true, BIG);
         vm.warp(block.timestamp + 1);
@@ -254,7 +254,7 @@ contract FullSwapsTest is RCBytecodeHarness {
         hook.killCF(id1);
         assertEq(_urSwapChecked(k1, true, SMALL, false), 1_500, "killed: discount only");
         vm.expectRevert();
-        hook.setCFActive(id1, true);
+        hook.setCFActive(id1, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
     }
 
     function test_overrideEqualsAVanillaPoolOfTheSameFee() public {
@@ -270,7 +270,7 @@ contract FullSwapsTest is RCBytecodeHarness {
 
     function test_threeSwapsOnePoolOneTxBothDirections() public {
         hook.configureCF(id1, 0, 256, 2_500, 0, 60, 1);
-        hook.setCFActive(id1, true);
+        hook.setCFActive(id1, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         vm.warp(block.timestamp + 1);
         MultiSwap.Leg[] memory legs = new MultiSwap.Leg[](3);
         legs[0] = MultiSwap.Leg(k1, true, -int256(uint256(BIG)));
@@ -293,8 +293,8 @@ contract FullSwapsTest is RCBytecodeHarness {
     function test_twoHopThroughTwoFullPoolsWithCfWriteAndRead() public {
         hook.configureCF(id1, 0, 256, 2_500, 0, 60, 1);
         hook.configureCF(id2, 0, 256, 2_500, 0, 60, 1);
-        hook.setCFActive(id1, true);
-        hook.setCFActive(id2, true);
+        hook.setCFActive(id1, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
+        hook.setCFActive(id2, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         vm.warp(block.timestamp + 1);
         uint256 tBefore = _tLast(id1);
         assertEq(_tLast(id2), tBefore);

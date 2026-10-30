@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
@@ -73,7 +74,7 @@ contract EngineGasTest is Test, Deployers {
         emit log_named_uint("configureCF (first write)", cf);
 
         g0 = gasleft();
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         uint256 cfOn = g0 - gasleft();
         emit log_named_uint("setCFActive(true)", cfOn);
 

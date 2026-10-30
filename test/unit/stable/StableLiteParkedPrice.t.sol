@@ -3,8 +3,8 @@ pragma solidity ^0.8.26;
 
 import "../../utils/StableTestBase.sol";
 
-/// @notice A price parked beyond the 10% fee window reads as the window edge: after the price is walked through empty
-///         ticks beyond every range and time passes, the trade back pays at least the fee at the edge.
+/// @notice A price parked beyond the 10% fee window: after the price is walked through empty ticks beyond every range
+///         and time passes, the trade back pays at least the fee at the window edge (the decay target is floored there).
 abstract contract StableLiteParkedPriceBase is StableTestBase {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -69,7 +69,8 @@ abstract contract StableLiteParkedPriceBase is StableTestBase {
         _rollClock(gap);
         (uint24 p0, uint24 p1) = _getFee(parked, kp);
         (uint24 e0, uint24 e1) = _getFee(edge, ke);
-        assertEq(abi.encode(p0, p1), abi.encode(e0, e1), "quotes: parked == edge");
+        assertGe(p0, e0, "quotes: parked >= edge");
+        assertGe(p1, e1, "quotes: parked >= edge");
         fp = _tradeBack(kp, below, -1e18);
         fe = _tradeBack(ke, below, -1e18);
         assertEq(fp, below ? p1 : p0, "charged == quoted");
@@ -84,7 +85,6 @@ abstract contract StableLiteParkedPriceBase is StableTestBase {
                 uint256 snap = vm.snapshotState();
                 (uint24 fp, uint24 fe) = _parkWaitTradeBack(below, TickMath.getSqrtPriceAtTick(far), gaps[i]);
                 assertGe(fp, fe, "the trade back pays at least the edge fee");
-                assertEq(fp, fe, "a parked price reads as the edge");
                 assertGt(fp, 0, "the trade back pays");
                 vm.revertToState(snap);
             }
@@ -92,15 +92,12 @@ abstract contract StableLiteParkedPriceBase is StableTestBase {
     }
 
     /// forge-config: default.fuzz.runs = 256
-    function testFuzz_beyondTheWindowReadsAsTheEdge(bool below, uint256 beyond, uint256 gap) public {
+    function testFuzz_beyondTheWindowPaysAtLeastTheEdge(bool below, uint256 beyond, uint256 gap) public {
         uint256 e = _edgePrice(below);
         beyond = bound(beyond, 1, 4000);
         uint160 at = uint160(below ? e - e * beyond / 10_000 : e + e * beyond / 10_000);
         (uint24 fp, uint24 fe) = _parkWaitTradeBack(below, at, bound(gap, 0, 10_000));
-        assertEq(fp, fe, "fee beyond the window == fee at its edge");
-        (uint40 d1, uint160 s1, uint40 b1) = FablesStableHookLite(parked).feeState(kp.toId());
-        (uint40 d2, uint160 s2, uint40 b2) = FablesStableHookLite(edge).feeState(ke.toId());
-        assertEq(abi.encode(d1, s1, b1), abi.encode(d2, s2, b2), "state written beyond the window == at its edge");
+        assertGe(fp, fe, "fee beyond the window >= fee at its edge");
     }
 }
 

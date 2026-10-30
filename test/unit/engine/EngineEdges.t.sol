@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
@@ -46,7 +47,7 @@ contract EngineEdgesTest is Test, Deployers {
         vm.expectRevert(FablesHookCore.PoolNotConfigured.selector);
         hook.killCF(ghost);
         vm.expectRevert(FablesHookCore.PoolNotConfigured.selector);
-        hook.setCFActive(ghost, false);
+        hook.setCFActive(ghost, false, 0, 0, 0);
         vm.expectRevert(FablesHookCore.PoolNotConfigured.selector);
         hook.configureCF(ghost, 0, 1, 1, 0, 5, 1);
         vm.expectRevert(FablesHookCore.PoolNotConfigured.selector);

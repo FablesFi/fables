@@ -44,7 +44,7 @@ contract CfAnchorRoundingTest is Test, Deployers {
         hook.configurePool(k, 1, 3_000, 3_000, 0, 10_000);
         _setTick(0);
         hook.configureCF(id, 0, 256, 2_500, 0, 300, 1);
-        hook.setCFActive(id, true);
+        hook.setCFActive(id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
     }
 
     function test_upMoveConvergesToTheTick() public {
@@ -56,7 +56,7 @@ contract CfAnchorRoundingTest is Test, Deployers {
 
     function test_downMoveConvergesToTheTick() public {
         _setTick(100);
-        hook.setCFActive(id, true);
+        hook.setCFActive(id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         (uint256 f0, uint256 f1) = _flat(0, 3_000);
         assertEq(_anchor(), 0);
         assertEq(f0, 3_000);

@@ -126,7 +126,7 @@ contract ConfigureCFWhileOnTest is Test, Deployers {
 
         hook.configureCF(id, 0, 256, 2_500, 0, 300, 60);
         vm.prank(poker);
-        hook.setCFActive(id, true);
+        hook.setCFActive(id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
 
         relayer = new MovingRelayer(manager);
         currency0.transfer(address(relayer), 1e24);
@@ -162,10 +162,10 @@ contract ConfigureCFWhileOnTest is Test, Deployers {
         vm.expectRevert(CF_ACTIVE);
         hook.configureCF(id, 1, 128, 1_000, 0, 60, 10);
         vm.prank(poker);
-        hook.setCFActive(id, false);
+        hook.setCFActive(id, false, 0, 0, 0);
         hook.configureCF(id, 1, 128, 1_000, 0, 60, 10);
         vm.prank(poker);
-        hook.setCFActive(id, true);
+        hook.setCFActive(id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         vm.prank(pauser);
         hook.killCF(id);
         hook.configureCF(id, 0, 256, 2_500, 0, 300, 60);
@@ -176,13 +176,13 @@ contract ConfigureCFWhileOnTest is Test, Deployers {
 
     function test_offConfigureOn() public {
         vm.prank(poker);
-        hook.setCFActive(id, false);
+        hook.setCFActive(id, false, 0, 0, 0);
         relayer.run(k, MOVE, address(safe), _relayData());
         assertLt(relayer.movedTick(), -50, "the price was moved");
         assertEq(FeeRef.unpackCF(hook.cfWord(id)).anchor, int32(relayer.movedTick()) * 256, "sampled, but off");
         _assertNoSurcharge("off");
         vm.prank(poker);
-        hook.setCFActive(id, true);
+        hook.setCFActive(id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         _assertNoSurcharge("re-anchored at the current tick");
     }
 }

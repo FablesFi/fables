@@ -24,7 +24,8 @@ contract StableFeeProbe is FablesStableFee {
     }
 }
 
-/// @notice FablesStableFee vs `StableFeeCalculation` at the price-window and 10% fee-cap clamps.
+/// @notice FablesStableFee vs `StableFeeCalculation` at the 10% price window (beyond it the decay target is floored
+///         at its value at the edge) and the 10% fee cap.
 contract StableFeeEdgesFuzzTest is Test {
     uint256 internal constant Q96 = 1 << 96;
     uint256 internal constant MIN_RATIO_X96 = 71305346262837903834189555302;
@@ -58,9 +59,17 @@ contract StableFeeEdgesFuzzTest is Test {
         );
     }
 
+    /// @dev A reachable persisted state: decaying fee <= 1e12 or UNDEFINED, any cached price, a block <= the clock.
+    function _reachable(uint256 st, uint40 clock) internal pure returns (uint256) {
+        uint256 fee0 = st % 7 == 0 ? UNDEF : bound(st & ((1 << 40) - 1), 0, 1e12);
+        return fee0 | (st & (((1 << 160) - 1) << 40)) | (uint256(bound(st >> 200, 0, clock)) << 200);
+    }
+
     /// forge-config: default.fuzz.runs = 2048
     /// forge-config: deep.fuzz.runs = 50000
-    function testFuzz_beyondWindowReadsAsEdge(
+    /// @notice Beyond the 10% window a swap never pays less than it would at the window edge, from any reachable
+    ///         state, and the price persisted is the price read.
+    function testFuzz_beyondWindowPaysAtLeastTheEdge(
         uint24 k,
         uint24 opt,
         uint8 tm,
@@ -76,15 +85,64 @@ contract StableFeeEdgesFuzzTest is Test {
         uint256 edge = below ? ref * SQRT_MIN_RATIO_X96 / Q96 : ref * Q96 / SQRT_MIN_RATIO_X96;
         sqrtP = below ? bound(sqrtP, 1, edge - 1) : bound(sqrtP, edge + 1, type(uint160).max);
         vm.assume(StableFeeCalculation.calculatePriceRatioX96(sqrtP, ref) < MIN_RATIO_X96);
-        uint256 fee0 = st % 7 == 0 ? UNDEF : bound(st & ((1 << 40) - 1), 0, 1e12);
-        st = fee0 | (st & (((1 << 160) - 1) << 40)) | (uint256(bound(st >> 200, 0, clock)) << 200);
-        uint256 previous = (st >> 40) & ((1 << 160) - 1);
-        vm.assume(previous != 0 || isNewBlock);
+        st = _reachable(st, clock);
+        vm.assume(((st >> 40) & ((1 << 160) - 1)) != 0 || isNewBlock);
         uint256 cfg = _cfg(k, opt, tm, ref);
         (uint256 fee, uint256 stateLow) = probe.getFee(cfg, st, sqrtP, isNewBlock, zfo, clock);
-        (uint256 feeEdge, uint256 stateEdge) = probe.getFee(cfg, st, edge, isNewBlock, zfo, clock);
-        assertEq(fee, feeEdge, "fee beyond the window == fee at its edge");
-        assertEq(stateLow, stateEdge, "state written beyond the window == at its edge");
+        (uint256 feeEdge,) = probe.getFee(cfg, st, edge, isNewBlock, zfo, clock);
+        assertGe(fee, feeEdge, "fee beyond the window >= fee at its edge");
+        assertEq((stateLow >> 40) & ((1 << 160) - 1), sqrtP, "the price read is persisted");
+    }
+
+    /// forge-config: default.fuzz.runs = 2048
+    /// forge-config: deep.fuzz.runs = 50000
+    /// @notice A price parked beyond the window (cached there, the decay run out) settles the paying side at
+    ///         max(StablePair's target at the price, the target at the window edge); the other side pays 0.
+    function testFuzz_parkedBeyondWindowSettlesAtTheFlooredTarget(
+        uint24 opt,
+        uint8 tm,
+        uint256 ref,
+        uint256 sqrtP,
+        uint256 fee0,
+        bool below,
+        bool zfo
+    ) public view {
+        (, opt, tm, ref) = _bounded(1, opt, tm, ref); // k = 1 (Q24): the decay runs out at once
+        sqrtP = _beyond(ref, sqrtP, below);
+        uint256 expected = _flooredTarget(StableFeeCalculation.calculatePriceRatioX96(sqrtP, ref), opt, tm);
+        // cached at the same price with any decaying fee at or above the target, 1,000 blocks ago
+        uint256 st = bound(fee0, expected, 1e12) | (sqrtP << 40) | (uint256(1_000_000 - 1_000) << 200);
+        (uint256 fee,) = probe.getFee(_cfg(1, opt, tm, ref), st, sqrtP, true, zfo, 1_000_000);
+        assertEq(fee, below == zfo ? 0 : expected, "parked: the floored target on the paying side, 0 on the other");
+    }
+
+    /// @dev A sqrt price strictly beyond the window on the chosen side.
+    function _beyond(uint256 ref, uint256 sqrtP, bool below) internal pure returns (uint256 p) {
+        uint256 edge = below ? ref * SQRT_MIN_RATIO_X96 / Q96 : ref * Q96 / SQRT_MIN_RATIO_X96;
+        p = below ? bound(sqrtP, 1, edge - 1) : bound(sqrtP, edge + 1, type(uint160).max);
+        vm.assume(StableFeeCalculation.calculatePriceRatioX96(p, ref) < MIN_RATIO_X96);
+    }
+
+    /// @dev max(StablePair's target at `ratio`, the target at the window edge), restated from the library.
+    function _flooredTarget(uint256 ratio, uint24 opt, uint8 tm) internal pure returns (uint256) {
+        uint256 close = uint256(StableFeeCalculation.calculateCloseBoundaryFee(ratio, opt));
+        uint256 target = StableFeeCalculation.calculateFarBoundaryFee(ratio, opt) - close * tm / 100;
+        uint256 edgeTarget = StableFeeCalculation.calculateFarBoundaryFee(MIN_RATIO_X96, opt)
+            - uint256(StableFeeCalculation.calculateCloseBoundaryFee(MIN_RATIO_X96, opt)) * tm / 100;
+        return target > edgeTarget ? target : edgeTarget;
+    }
+
+    /// @notice A stored band that reaches the window edge (optimalFeeE6 20%: impossible for a validated config) skips
+    ///         the floor instead of reverting, so the fee path still reverts only where StablePair's own math does.
+    function test_bandReachingTheEdgeSkipsTheFloor() public view {
+        uint256 ref = 1 << 96;
+        uint256 sqrtP = ref * 70_710_678 / 100_000_000; // price ratio ~0.5
+        uint256 ratio = StableFeeCalculation.calculatePriceRatioX96(sqrtP, ref);
+        uint256 close = uint256(StableFeeCalculation.calculateCloseBoundaryFee(ratio, 200_000));
+        uint256 far = StableFeeCalculation.calculateFarBoundaryFee(ratio, 200_000);
+        uint256 expected = StableFeeCalculation.calculateDecayingFee(far - close, far, 11_744_051, 1);
+        (uint256 fee,) = probe.getFee(_cfg(11_744_051, 200_000, 100, ref), _fresh(1), sqrtP, true, false, 2);
+        assertEq(fee, expected, "StablePair's own target, no floor, no revert");
     }
 
     /// forge-config: default.fuzz.runs = 2048

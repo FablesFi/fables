@@ -92,7 +92,7 @@ contract FullGasTest is HooklessBaseline {
         GasSample memory cfOff = swapUR(k1, true, sh.amountIn);
         logRow("full", "cf_configured_off", cfOff);
 
-        hook.setCFActive(id1, true);
+        hook.setCFActive(id1, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         GasSample memory cfRead = swapUR(k1, true, sh.amountIn);
         logRow("full", "cf_on_read", cfRead);
         assertEq(hook.cfWord(id1) & 0xffffffffff, block.timestamp, "armed now: no write due");

@@ -9,13 +9,21 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 ///         `StableFeeCalculation`.
 library StableRefModel {
     uint256 internal constant UNDEF = StableFeeCalculation.UNDEFINED_DECAYING_FEE_E12;
-    uint256 internal constant Q96 = 1 << 96;
     uint256 internal constant MIN_FEE_PRICE_RATIO_X96 = 71305346262837903834189555302;
-    uint256 internal constant SQRT_MIN_FEE_PRICE_RATIO_X96 = 75162434512514379355924140470;
 
-    function window(uint256 p, uint256 ref) internal pure returns (uint256) {
-        if (StableFeeCalculation.calculatePriceRatioX96(p, ref) >= MIN_FEE_PRICE_RATIO_X96) return p;
-        return p < ref ? ref * SQRT_MIN_FEE_PRICE_RATIO_X96 / Q96 : ref * Q96 / SQRT_MIN_FEE_PRICE_RATIO_X96;
+    /// @notice The target beyond the fee window: StablePair's target, never below its value at a 0.9 price ratio.
+    function edgeFloor(uint256 target, uint256 ratio, uint256 optimalFeeE6, uint256 targetMultiplier)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (ratio >= MIN_FEE_PRICE_RATIO_X96) return target;
+        uint256 edgeFar = StableFeeCalculation.calculateFarBoundaryFee(MIN_FEE_PRICE_RATIO_X96, optimalFeeE6);
+        int256 edgeClose = StableFeeCalculation.calculateCloseBoundaryFee(MIN_FEE_PRICE_RATIO_X96, optimalFeeE6);
+        if (edgeClose <= 0) return target;
+        uint256 share = uint256(edgeClose) * targetMultiplier / 100;
+        if (edgeFar <= share) return target;
+        return target < edgeFar - share ? edgeFar - share : target;
     }
 
     function bookPrice(int24 outerLo, int24 outerHi, uint160 sqrtP, int24 tick) internal pure returns (uint256) {
@@ -52,7 +60,7 @@ library StableRefModel {
         returns (Out memory o)
     {
         o.isNewBlock = clock > s.blockNumber || s.sqrtAmm == 0;
-        uint256 amm = window(o.isNewBlock ? liveSqrtP : s.sqrtAmm, c.ref);
+        uint256 amm = o.isNewBlock ? liveSqrtP : s.sqrtAmm;
         uint256 ratio = StableFeeCalculation.calculatePriceRatioX96(amm, c.ref);
         int256 close = StableFeeCalculation.calculateCloseBoundaryFee(ratio, c.optimalFeeE6);
         bool below = amm < c.ref;
@@ -92,7 +100,7 @@ library StableRefModel {
         } else {
             start = s.decayingFeeE12;
         }
-        uint256 target = far - close * c.targetMultiplier / 100;
+        uint256 target = edgeFloor(far - close * c.targetMultiplier / 100, ratio, c.optimalFeeE6, c.targetMultiplier);
         if (start < target) start = target;
         uint256 blocks = clock > s.blockNumber ? clock - s.blockNumber : 0;
         return StableFeeCalculation.calculateDecayingFee(target, start, c.k, blocks);

@@ -18,12 +18,12 @@ import {DiscountLib} from "../libraries/DiscountLib.sol";
 struct StableFeeConfig {
     uint24 k; // per-block decay factor, Q24: share of the excess over the target fee kept each block
     uint24 optimalFeeE6; // optimal band half-width in price space, 1e6 precision (max 1e4 = 1%)
-    uint8 targetMultiplier; // 1..100: target = far - close * targetMultiplier / 100
+    uint8 targetMultiplier; // 1..100: target = far - close * targetMultiplier / 100 (floored beyond the fee window)
     uint160 referenceSqrtPriceX96;
 }
 
-/// @notice Fee state, written on the first swap of each clock block and reset by every config write (the minimum
-///         fee, kept in the same word, is not part of it).
+/// @notice Fee state, written on the first swap of each clock block and reset by every fee-config or reference write
+///         and by lowering the minimum fee (the minimum fee itself, kept in the same word, is not part of it).
 struct StableFeeState {
     uint40 decayingFeeE12;
     uint160 sqrtAmmPriceX96;
@@ -34,9 +34,10 @@ struct StableFeeState {
 /// @notice Uniswap StablePair's fee (v4-hooks-public @ e4eabe5, MIT) plus a per-pool minimum fee and a per-pool
 ///         whitelist discount applied after them, never below that minimum. Fees in pips.
 /// @dev Same fee math, revert bytes and views as StablePair, except: the fee charged is capped at `STABLE_MAX_FEE`,
-///      the formula reads the price clamped to within 10% of the reference, `targetMultiplier` >= 1, pools are
+///      below a 0.9 price ratio to the reference the target the fee decays to never falls below its value at 0.9,
+///      `targetMultiplier` >= 1, pools are
 ///      created only by `configureStablePool` (the reference then moves only through the build's bounded
-///      `updateReferencePrice`), every swap pays at least the pool's minimum fee (default 0: StablePair's fee),
+///      `updateReferencePrice`), every swap pays at least the pool's minimum fee (default 0: no minimum),
 ///      roles via AccessManager. Two words per pool; bits below 216 (cfg) and 240 (state) follow StablePair's packing:
 ///        cfg    k [0,24) | optimalFeeE6 [24,48) | targetMultiplier [48,56) | referenceSqrtPriceX96 [56,216)
 ///               | bloom32 [216,248) | seed8 [248,256)
@@ -77,10 +78,9 @@ abstract contract FablesStableFee is FablesHookCore {
     uint40 public constant MAX_DISCOUNT_TERM = 90 days;
     uint256 public constant MAX_DISCOUNT_BPS = DiscountLib.MAX_DISCOUNT_BPS;
 
-    /// @dev Fee window: below a 0.9 price ratio to the reference (Q96) the formula reads the edge, sqrt price =
-    ///      reference x or / sqrt(0.9); beyond it the far-boundary fee already exceeds the 10% cap.
+    /// @dev The fee window edge, a price ratio to the reference of 0.9 (Q96). Beyond it the target is floored at its
+    ///      value at the edge: at targetMultiplier 100 StablePair's target (far - close) falls toward 0 with the ratio.
     uint256 internal constant MIN_FEE_PRICE_RATIO_X96 = 71305346262837903834189555302;
-    uint256 internal constant SQRT_MIN_FEE_PRICE_RATIO_X96 = 75162434512514379355924140470;
     uint256 internal constant Q96 = 1 << 96;
 
     uint32 private constant ARB_SYS_SELECTOR = 0xa3b1b31d;
@@ -384,8 +384,8 @@ abstract contract FablesStableFee is FablesHookCore {
         (sqrtAmmPriceX96, isNewBlock) = _loadPrice(poolId, st, clock, 0);
     }
 
-    /// StablePairHook._getFee on the packed words, same statements and order, at the price clamped to the fee window,
-    /// then the minimum fee.
+    /// StablePairHook._getFee on the packed words, same statements and order (the target floored beyond the fee
+    /// window), then the minimum fee.
     /// @return lpFeeE12 The fee, at least the pool's minimum fee.
     /// @return stateLow State bits [0, 200) to persist (the decaying fee and the price the formula read) and the
     ///         pool's minimum fee in bits [240, 256), where it is stored.
@@ -398,13 +398,6 @@ abstract contract FablesStableFee is FablesHookCore {
         uint256 optimalFeeE6 = (cfg >> CFG_OPT_SHIFT) & MASK24;
 
         uint256 priceRatioX96 = StableFeeCalculation.calculatePriceRatioX96(sqrtAmmPriceX96, sqrtReferencePriceX96);
-        if (priceRatioX96 < MIN_FEE_PRICE_RATIO_X96) {
-            // ref < 2^160, so neither product overflows
-            sqrtAmmPriceX96 = sqrtAmmPriceX96 < sqrtReferencePriceX96
-                ? sqrtReferencePriceX96 * SQRT_MIN_FEE_PRICE_RATIO_X96 / Q96
-                : sqrtReferencePriceX96 * Q96 / SQRT_MIN_FEE_PRICE_RATIO_X96;
-            priceRatioX96 = StableFeeCalculation.calculatePriceRatioX96(sqrtAmmPriceX96, sqrtReferencePriceX96);
-        }
 
         int256 closeBoundaryFeeE12 = StableFeeCalculation.calculateCloseBoundaryFee(priceRatioX96, optimalFeeE6);
 
@@ -422,7 +415,7 @@ abstract contract FablesStableFee is FablesHookCore {
                     cfg,
                     st,
                     sqrtAmmPriceX96,
-                    sqrtReferencePriceX96,
+                    priceRatioX96,
                     uint256(closeBoundaryFeeE12),
                     StableFeeCalculation.calculateFarBoundaryFee(priceRatioX96, optimalFeeE6),
                     ammPriceBelowRP,
@@ -452,7 +445,7 @@ abstract contract FablesStableFee is FablesHookCore {
         uint256 cfg,
         uint256 st,
         uint256 sqrtAmmPriceX96,
-        uint256 sqrtReferencePriceX96,
+        uint256 priceRatioX96,
         uint256 closeBoundaryFeeE12,
         uint256 farBoundaryFeeE12,
         bool ammPriceBelowRP,
@@ -460,10 +453,9 @@ abstract contract FablesStableFee is FablesHookCore {
     ) internal pure returns (uint256 decayingFeeE12) {
         // start fee from how the price moved since the last swap
         uint256 decayStartFeeE12 =
-            _decayStartFee(st, sqrtAmmPriceX96, sqrtReferencePriceX96, farBoundaryFeeE12, ammPriceBelowRP);
+            _decayStartFee(st, sqrtAmmPriceX96, (cfg >> CFG_REF_SHIFT) & MASK160, farBoundaryFeeE12, ammPriceBelowRP);
 
-        uint256 targetFeeE12 =
-            farBoundaryFeeE12 - closeBoundaryFeeE12 * ((cfg >> CFG_TM_SHIFT) & MASK8) / MAX_TARGET_MULTIPLIER;
+        uint256 targetFeeE12 = _targetFee(cfg, priceRatioX96, closeBoundaryFeeE12, farBoundaryFeeE12);
 
         // clamp the start up to the target so the decay never underflows
         if (decayStartFeeE12 < targetFeeE12) {
@@ -473,6 +465,31 @@ abstract contract FablesStableFee is FablesHookCore {
         decayingFeeE12 = StableFeeCalculation.calculateDecayingFee(
             targetFeeE12, decayStartFeeE12, (cfg >> CFG_K_SHIFT) & MASK24, _blocksPassed(st, clock)
         );
+    }
+
+    /// StablePair's target, far - close x targetMultiplier / 100; beyond the fee window (price ratio to the reference
+    /// below 0.9) never below its value at the window edge.
+    function _targetFee(uint256 cfg, uint256 priceRatioX96, uint256 closeBoundaryFeeE12, uint256 farBoundaryFeeE12)
+        internal
+        pure
+        returns (uint256 targetFeeE12)
+    {
+        uint256 targetMultiplier = (cfg >> CFG_TM_SHIFT) & MASK8;
+        targetFeeE12 = farBoundaryFeeE12 - closeBoundaryFeeE12 * targetMultiplier / MAX_TARGET_MULTIPLIER;
+        if (priceRatioX96 < MIN_FEE_PRICE_RATIO_X96) {
+            uint256 optimalFeeE6 = (cfg >> CFG_OPT_SHIFT) & MASK24;
+            int256 edgeCloseFeeE12 =
+                StableFeeCalculation.calculateCloseBoundaryFee(MIN_FEE_PRICE_RATIO_X96, optimalFeeE6);
+            uint256 edgeFarFeeE12 = StableFeeCalculation.calculateFarBoundaryFee(MIN_FEE_PRICE_RATIO_X96, optimalFeeE6);
+            // a valid config passes both checks (at optimalFeeE6 0 and targetMultiplier 100 the floor is 0 and is
+            // skipped); a stored word that fails one skips the floor, never reverts
+            if (edgeCloseFeeE12 > 0) {
+                uint256 edgeCloseShareE12 = uint256(edgeCloseFeeE12) * targetMultiplier / MAX_TARGET_MULTIPLIER;
+                if (edgeFarFeeE12 > edgeCloseShareE12 && targetFeeE12 < edgeFarFeeE12 - edgeCloseShareE12) {
+                    targetFeeE12 = edgeFarFeeE12 - edgeCloseShareE12;
+                }
+            }
+        }
     }
 
     function _blocksPassed(uint256 st, uint256 clock) internal pure returns (uint256) {

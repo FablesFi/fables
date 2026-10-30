@@ -58,7 +58,7 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
         uint256 liqChanges;
         uint256 exactOut;
         uint256 cappedStops;
-        uint256 windowStops;
+        uint256 floorStops;
         bool stop;
     }
 
@@ -136,7 +136,7 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
             T.liqChanges += R.liqChanges;
             T.directPos += R.directPos;
             T.exactOut += R.exactOut;
-            T.windowStops += R.windowStops;
+            T.floorStops += R.floorStops;
             if (R.mode == 1) T.mode += 1;
         }
         T.ts = 20;
@@ -167,8 +167,8 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
         R.seed = seed;
         _setupRun(R);
         for (uint256 s; s < STEPS; s++) {
-            if (_outsideFeeWindow(R)) {
-                R.windowStops++;
+            if (_floorBinds(R)) {
+                R.floorStops++;
                 break;
             }
             uint256 x = _rand(seed, s, "step");
@@ -200,8 +200,8 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
                 vm.toString(T.zeroFee),
                 "|exactOut=",
                 vm.toString(T.exactOut),
-                "|windowStops=",
-                vm.toString(T.windowStops)
+                "|floorStops=",
+                vm.toString(T.floorStops)
             )
         );
         console.log(
@@ -248,10 +248,18 @@ abstract contract StableLiteVsStablePairBase is StableTestBase {
         );
     }
 
-    function _outsideFeeWindow(Run memory R) internal view returns (bool) {
+    function _floorBinds(Run memory R) internal view returns (bool) {
+        uint256 edgeRatio = 71305346262837903834189555302;
         (uint160 p,,,) = pm.getSlot0(R.id[0]);
-        (,,, uint160 ref) = IStablePair(R.h[0]).feeConfig(R.id[0]);
-        return StableFeeCalculation.calculatePriceRatioX96(p, ref) < 71305346262837903834189555302;
+        (, uint24 opt, uint8 tm, uint160 ref) = IStablePair(R.h[0]).feeConfig(R.id[0]);
+        uint256 ratio = StableFeeCalculation.calculatePriceRatioX96(p, ref);
+        if (ratio >= edgeRatio) return false;
+        int256 close = StableFeeCalculation.calculateCloseBoundaryFee(ratio, opt);
+        if (close <= 0) return false;
+        uint256 target = StableFeeCalculation.calculateFarBoundaryFee(ratio, opt) - uint256(close) * tm / 100;
+        uint256 edge = StableFeeCalculation.calculateFarBoundaryFee(edgeRatio, opt)
+            - uint256(StableFeeCalculation.calculateCloseBoundaryFee(edgeRatio, opt)) * tm / 100;
+        return target < edge;
     }
 
     function _gap(uint256 x) internal pure returns (uint256) {

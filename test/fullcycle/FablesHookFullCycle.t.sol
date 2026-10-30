@@ -407,11 +407,11 @@ contract FablesHookFullCycleTest is FullCycleBase {
         uint24 b1 = _base1();
         vm.prank(poker);
         vm.expectRevert(FablesFeeEngine.CFNotConfigured.selector);
-        f.setCFActive(C.id, true);
+        f.setCFActive(C.id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
 
         _admin(hook, abi.encodeCall(FablesFeeEngine.configureCF, (C.id, 0, 256, 2_500, 0, 60, 1)));
         vm.prank(poker);
-        f.setCFActive(C.id, true);
+        f.setCFActive(C.id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         assertEq(_swap(trader, C.key, true, uint128(8 * SWAP_UNITS * C.u0)), BASE0, "anchored at the tick: no CF yet");
         vm.warp(block.timestamp + 1);
         uint24 cont = f.currentFee(C.id, true);
@@ -420,17 +420,17 @@ contract FablesHookFullCycleTest is FullCycleBase {
         assertEq(_swap(trader, C.key, true, uint128(SWAP_UNITS * C.u0)), cont, "charged == twin view");
 
         vm.prank(poker);
-        f.setCFActive(C.id, false);
+        f.setCFActive(C.id, false, 0, 0, 0);
         assertEq(f.currentFee(C.id, true), BASE0, "CF off");
         vm.prank(guardian);
         f.killCF(C.id);
         vm.prank(poker);
         vm.expectRevert(FablesFeeEngine.CFNotConfigured.selector);
-        f.setCFActive(C.id, true);
+        f.setCFActive(C.id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
 
         _admin(hook, abi.encodeCall(FablesFeeEngine.configureCF, (C.id, 1, 256, 2_500, 0, 60, 1)));
         vm.prank(poker);
-        f.setCFActive(C.id, true);
+        f.setCFActive(C.id, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         assertEq(_swap(trader, C.key, true, uint128(8 * SWAP_UNITS * C.u0)), BASE0, "re-armed: no CF yet");
         vm.warp(block.timestamp + 1);
         uint24 rev = f.currentFee(C.id, false);
@@ -438,7 +438,7 @@ contract FablesHookFullCycleTest is FullCycleBase {
         assertEq(f.currentFee(C.id, true), BASE0, "mode 1 leaves the continuation on base");
         assertEq(_swap(trader, C.key, false, uint128(SWAP_UNITS * C.u1)), rev, "charged == twin view");
         vm.prank(poker);
-        f.setCFActive(C.id, false);
+        f.setCFActive(C.id, false, 0, 0, 0);
         _expectFees(BASE0, b1, "CF off again");
     }
 

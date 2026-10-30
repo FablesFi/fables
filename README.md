@@ -40,14 +40,14 @@ src/
 
 ## Audit scope
 
-All of `src/` except the verbatim third-party files: 2,784 lines of code (comments and blank lines removed) in 18 files.
+All of `src/` except the verbatim third-party files: 2,800 lines of code (comments and blank lines removed) in 18 files.
 
 | file | nSLOC |
 |---|---:|
 | `src/base/FablesLedgerV2.sol` | 619 |
-| `src/base/FablesStableFee.sol` | 467 |
+| `src/base/FablesStableFee.sol` | 479 |
 | `src/libraries/LedgerLibV2.sol` | 457 |
-| `src/base/FablesFeeEngine.sol` | 335 |
+| `src/base/FablesFeeEngine.sol` | 339 |
 | `src/base/FablesFeeFull.sol` (assembly `beforeSwap` entry) | 177 |
 | `src/libraries/FeeRef.sol` | 163 |
 | `src/libraries/PoolWordLib.sol` | 112 |
@@ -76,19 +76,19 @@ Access control is an OpenZeppelin `AccessManager`. Hooks are immutable (no proxy
 | Role | Can | Cannot |
 |---|---|---|
 | ADMIN | configure pools and fee bands, set sinks and the claim fee, grant roles | move LP principal, set a fee above 10%, un-configure a pool |
-| FEE_POKER | move each side's fee within [max(floor, 50% of base), min(pool cap, category cap)] for at most 72 h, raising at most one step per 60 s; turn the continuation fee on or off | leave those bounds |
+| FEE_POKER | move each side's fee within [max(floor, 50% of base), min(pool cap, category cap)] for at most 72 h, raising at most one step per 60 s; turn the continuation fee (a surcharge of at most 25 bp, within the pool cap) on or re-anchor it, only at a tick inside the range the call gives and by its deadline, or off | leave those bounds |
 | PAUSER | pause deposits, claims, stakes, transfers and revenue sweeps for up to 7 days per call; clear pokes; switch off the continuation fee; revoke discounts | pause `withdraw` or `unstake` |
 | DISCOUNT_ADMIN | list senders for a discount that never raises a fee or goes below the floor | raise any fee |
 | REVENUE_OPS | set the claim fee, at most 20% of LP fees | touch principal |
 | SEEDER | initialize a pool the admin has configured (FablesHook builds), at the price it passes | configure pools or change existing ones |
-| STABLE_KEEPER | on the stable builds: move a pool's reference by at most 0.1% per minute; set its minimum fee (at most 65,535 pips) | move funds or change any other setting |
+| STABLE_KEEPER | on the stable builds: move a pool's reference by about 0.1% at most per minute (a price ratio of at least 0.999 to the current reference); set its minimum fee (at most 65,535 pips) | move funds or change any other setting |
 
 Role-to-function bindings are AccessManager configuration set at deployment; ADMIN can change them.
 
 ## Properties
 
 - The LP fee is never above the pool cap and never above 10% (100,000 pips) on any build.
-- The fee a swap pays equals what the fee views quote for the same state.
+- The fee a swap pays equals what `feeFor` quotes for the same state and router (`currentFee` quotes it without a discount).
 - `withdraw` cannot be blocked by any role, pause or configuration.
 - The ledger never owes more than it holds; fees earned before a deposit, stake or transfer cannot be taken by the newcomer.
 - Only the hook can initialize its pools; on the Exclusive builds only the ledger can add liquidity.
@@ -101,23 +101,36 @@ Role-to-function bindings are AccessManager configuration set at deployment; ADM
   that move a non-zero amount of it wait until it is unpaused.
 - **Unsupported tokens:** fee-on-transfer, rebasing, and tokens whose supply can exceed 2^127 units.
 - **Unlocks:** every ledger function opens its own PoolManager unlock; call it directly, not from inside another unlock.
+- **Role calls:** every role setter writes the values its caller signs (a fee, a duration, a reference, a minimum) and
+  re-checks all of its bounds when it executes, so a signed call that executes late (for example a Safe execution that
+  reverted, which keeps its nonce until the Safe executes another transaction) changes only when those values apply,
+  never what they are or how far they can go. The one role call whose effect depends on the pool price, switching the
+  continuation fee on (it re-anchors at the current tick; `configureCF`'s anchor, set only while it is off, is replaced
+  then), therefore takes tick bounds and a deadline. Role holders that are Safes submit with `safeTxGas` above 0, so a
+  failed call spends its nonce.
 - **Direct liquidity** (`FablesHook`, `FablesHookETH`, `FablesStableHookLite`): anyone can also add liquidity directly through the
   PoolManager. Those positions share swap fees pro rata (including just-in-time liquidity), get no receipts, pay no claim fee and
   are not stopped by a pause.
-- **Continuation fee:** a soft surcharge that a trader can avoid by first trading back. Its memory ends after 255 s, so a fade
-  time above 51 s stops abruptly instead of fading out.
+- **Continuation fee:** a soft surcharge on swaps that extend the move since its anchor (mode 0; a trader can avoid it by
+  first trading back) or that reverse it (mode 1). The anchor follows the price with a fade time `tau`, updated at most
+  once per `period`; if no swap updates it for min(255 s, 5 x tau) it snaps to the price, so on a quiet pool a fade time
+  above 51 s ends abruptly at 255 s.
 - **Discounts** are keyed on the PoolManager caller (the router). `currentFee` is the fee without a discount; a quoter
   gets the exact fee a router pays with `feeFor(poolId, zeroForOne, router)` (stable builds: `feeFor(key, zeroForOne,
   router)`), where `router` is the contract that calls `PoolManager.swap`.
-- **Claim fee:** charged at the lowest rate in force since a range's last sync.
+- **Claim fee:** charged at no more than the lowest rate in force since a range's last sync. Its recipient is hook-wide:
+  `setClaimFee` on any pool sets it for every pool and first pays the old recipient only for the currencies it lists in
+  `settleFirst`.
 - **Stable fee** (Uniswap's StablePair design): each pool has a reference price, and swaps that move the price away from it
   pay less than swaps that move it back. Inside the pool's optimal band both pay a small fee. Outside it, swaps away pay 0 and
-  swaps back pay a fee that starts high and falls every block. Our changes: the fee is capped at 10%; a price more than 10%
-  from the reference is treated as exactly 10% away; the reference can move by at most 0.1% per minute
+  swaps back pay a fee that starts high and falls every block. Our changes: the fee is capped at 10%; once the price ratio to
+  the reference is below 0.9, the level the falling fee settles at is held at no less than its value at 0.9, so the fee
+  is never below StablePair's (capped at 10%) and can be above it, there and while it falls after such a move; the
+  reference can move by about 0.1% at most per minute (a price ratio of at least 0.999)
   (`updateReferencePrice`, which restarts the falling fee); and a pool can set a minimum fee that every swap pays
-  (`setMinimumFee`, default 0 = StablePair's fee; no discount goes below it; lowering it restarts the falling fee).
-  Quote with `getFee`, `currentFee` or `feeFor`: an off-chain StablePair model must also apply the minimum and treat a
-  lowering `MinimumFeeSet` as a fee-state reset, like `FeeConfigUpdated`.
+  (`setMinimumFee`, default 0 = no minimum; no discount goes below it; lowering it restarts the falling fee).
+  Quote with `getFee`, `currentFee` or `feeFor`: an off-chain StablePair model must also apply that floor and the
+  minimum, and treat a lowering `MinimumFeeSet` as a fee-state reset, like `FeeConfigUpdated`.
 - **LP receipts (ERC-6909):** a transfer of 0 reverts; staked receipts must be unstaked before they move (transferable =
   `balanceOf - userPosition(...).staked`); transfers stop during a pause and during any ledger call (for example inside a native-ETH refund), approvals do
   not; a transfer to `address(0)` succeeds and those shares can no longer be withdrawn.
@@ -154,4 +167,5 @@ files marked MIT (see `licenses/MIT_LICENSE`).
 
 ## Status and security
 
-Not yet externally audited. Report security issues privately to security@fables.fi.
+Not yet externally audited. Report security issues privately to security@fables.fi. Automated pre-audit reports and
+their resolution: [`security/pre-audits/`](security/pre-audits/).

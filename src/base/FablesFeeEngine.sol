@@ -38,6 +38,10 @@ abstract contract FablesFeeEngine is FablesHookCore {
     error CFNotConfigured();
     /// @notice `configureCF` while the CF is on: switch it off first.
     error CFActive();
+    /// @notice `setCFActive(true)` at a tick outside the caller's bounds.
+    error CFTickOutOfRange(int24 tick);
+    /// @notice `setCFActive(true)` after the caller's deadline.
+    error CFDeadlineExpired();
     error PoolNotInitialized();
     error SymmetricRequired();
     error ModuleNotAvailable();
@@ -302,7 +306,8 @@ abstract contract FablesFeeEngine is FablesHookCore {
     /// @notice Sets a pool's CF parameters and anchors it at the current tick; does not switch it on.
     /// @param mode 0 = continuation, 1 = reverse.
     /// @dev kQ8 and cfCap must be non-zero (kQ8 == 0 is the killed state). Reverts `CFActive` while on, so the anchor
-    ///      cannot be picked by moving the price first; `setCFActive(true)` re-anchors at its own tick.
+    ///      cannot be picked by moving the price first; `setCFActive(true)` re-anchors at its own tick, inside the
+    ///      caller's bounds and by its deadline.
     function configureCF(PoolId poolId, uint8 mode, uint16 kQ8, uint24 cfCap, uint16 band16, uint16 tau, uint8 period)
         external
         restricted
@@ -341,8 +346,12 @@ abstract contract FablesFeeEngine is FablesHookCore {
         emit CFConfigured(poolId, mode, kQ8, cfCap, band16, tau, period);
     }
 
-    /// @notice Switches the CF on or off; switching on re-anchors it at the current tick.
-    function setCFActive(PoolId poolId, bool on) external restricted {
+    /// @notice Switches the CF on or off; switching on re-anchors it at the current tick, which must lie in
+    ///         [minTick, maxTick], no later than `deadline` (both ignored when switching off).
+    /// @dev Whoever lands the call, and however the price was moved first, the anchor is a tick in
+    ///      [minTick, maxTick], set no later than `deadline`; the deadline stops a signed call that did not land from
+    ///      being landed after it.
+    function setCFActive(PoolId poolId, bool on, int24 minTick, int24 maxTick, uint256 deadline) external restricted {
         _requireSwapModules();
         uint256 w = _word[poolId];
         if (w.cap() == 0) revert PoolNotConfigured();
@@ -351,6 +360,8 @@ abstract contract FablesFeeEngine is FablesHookCore {
             if (FeeRef.cfK(cf) == 0) revert CFNotConfigured();
             (uint160 sqrtPriceX96, int24 tick,,) = poolManager.getSlot0(poolId);
             if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+            if (block.timestamp > deadline) revert CFDeadlineExpired();
+            if (tick < minTick || tick > maxTick) revert CFTickOutOfRange(tick);
             _cf[poolId] = FeeRef.cfRearm(cf, block.timestamp, tick);
         }
         _word[poolId] = w.withCfOn(on);

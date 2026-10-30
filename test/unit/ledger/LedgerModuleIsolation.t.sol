@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
@@ -117,7 +118,7 @@ abstract contract LedgerModuleIsolationBase is LedgerFixture {
         engine.setDiscount(ids, alice, 1000, 0, 3, uint40(block.timestamp + 1 days));
         engine.setDiscount(ids, bob, 500, 0, 3, uint40(block.timestamp + 1 days));
         engine.configureCF(poolId, 0, 128, 1000, 0, 60, 10);
-        engine.setCFActive(poolId, true);
+        engine.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
     }
 
     function test_theForbiddenSlotsAreTheEnginesRealSlots() public {

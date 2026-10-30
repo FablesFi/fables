@@ -64,7 +64,7 @@ contract FablesStableHookLite is FablesStableFee, FablesLedgerV2 {
     }
 
     /// @notice Sets a pool's minimum fee in pips: every swap pays at least it, no discount goes below it.
-    /// @dev Lowering it resets the fee state (the falling fee restarts); 0 restores StablePair's fee.
+    /// @dev Lowering it resets the fee state (the falling fee restarts); 0 removes the minimum.
     function setMinimumFee(PoolKey calldata key, uint16 minimumFee_) external restricted {
         PoolId poolId = key.toId();
         _checkPoolInitialized(poolId);

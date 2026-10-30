@@ -504,7 +504,11 @@ contract CategoryHandler is Test {
         }
         bool on = what == 1;
         bool ok = !on || FeeRef.cfK(FablesFeeFull(hook).cfWord(ids[p])) != 0;
-        (bool landed_, bytes memory err) = _callHook(abi.encodeCall(FablesFeeEngine.setCFActive, (ids[p], on)));
+        (bool landed_, bytes memory err) = _callHook(
+            abi.encodeCall(
+                FablesFeeEngine.setCFActive, (ids[p], on, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max)
+            )
+        );
         _outcome("cfSwitch", ok, landed_, err, FablesFeeEngine.CFNotConfigured.selector);
         if (landed_ && _engine().poolWord(ids[p]).cfOn() != on) _violate("cfSwitch: cfOn not stored");
     }

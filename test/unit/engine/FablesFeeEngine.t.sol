@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {Deployers} from "v4-core/test/utils/Deployers.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
@@ -234,7 +235,7 @@ contract FablesFeeEngineTest is Test, Deployers {
         hook.setDiscountFilter(poolId, 77, _accounts(desk));
         hook.configureCF(poolId, 0, 256, 1000, 80, 60, 15);
         vm.prank(poker);
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         uint256 before = hook.poolWord(poolId);
 
         hook.configurePool(key, MEME, 3000, 3000, 2500, 20_000);
@@ -634,19 +635,19 @@ contract FablesFeeEngineTest is Test, Deployers {
     function test_setCFActive_requiresConfigAndInitialization() public {
         vm.prank(poker);
         vm.expectRevert(FablesFeeEngine.CFNotConfigured.selector);
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         vm.prank(poker);
-        hook.setCFActive(poolId, false);
+        hook.setCFActive(poolId, false, 0, 0, 0);
 
         PoolKey memory k = _key(120);
         hook.configurePool(k, STOCK, 700, 700, 300, 8000);
         hook.configureCF(k.toId(), 0, 256, 1000, 80, 60, 15);
         vm.prank(poker);
         vm.expectRevert(FablesFeeEngine.PoolNotInitialized.selector);
-        hook.setCFActive(k.toId(), true);
+        hook.setCFActive(k.toId(), true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         hook.initializePool(k, SQRT_PRICE_1_1);
         vm.prank(poker);
-        hook.setCFActive(k.toId(), true);
+        hook.setCFActive(k.toId(), true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         assertTrue(hook.poolFee(k.toId()).cfOn);
     }
 
@@ -660,7 +661,7 @@ contract FablesFeeEngineTest is Test, Deployers {
         vm.expectEmit(address(hook));
         emit FablesFeeEngine.CFActiveSet(poolId, true);
         vm.prank(poker);
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         (FeeRef.CFWord memory d, bool on) = hook.cfOf(poolId);
         assertTrue(on);
         assertEq(d.tLast, block.timestamp);
@@ -671,14 +672,14 @@ contract FablesFeeEngineTest is Test, Deployers {
         vm.expectEmit(address(hook));
         emit FablesFeeEngine.CFActiveSet(poolId, false);
         vm.prank(poker);
-        hook.setCFActive(poolId, false);
+        hook.setCFActive(poolId, false, 0, 0, 0);
         assertFalse(hook.poolFee(poolId).cfOn);
     }
 
     function test_killCF_zeroesTheSlopeUntilAdminReconfigures() public {
         hook.configureCF(poolId, 0, 256, 1000, 80, 60, 15);
         vm.prank(poker);
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         vm.expectEmit(address(hook));
         emit FablesFeeEngine.CFKilled(poolId);
         vm.prank(pauser);
@@ -689,10 +690,10 @@ contract FablesFeeEngineTest is Test, Deployers {
         assertEq(c.cfCap, 1000, "only the slope is zeroed");
         vm.prank(poker);
         vm.expectRevert(FablesFeeEngine.CFNotConfigured.selector);
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         hook.configureCF(poolId, 0, 128, 1000, 80, 60, 15);
         vm.prank(poker);
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         assertTrue(hook.poolFee(poolId).cfOn);
         vm.prank(pauser);
         vm.expectRevert(FablesHookCore.PoolNotConfigured.selector);
@@ -704,7 +705,7 @@ contract FablesFeeEngineTest is Test, Deployers {
         sym.configureCF(symPoolId, 0, 256, 1000, 80, 60, 15);
         vm.prank(poker);
         vm.expectRevert(FablesFeeEngine.ModuleNotAvailable.selector);
-        sym.setCFActive(symPoolId, true);
+        sym.setCFActive(symPoolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         vm.prank(pauser);
         vm.expectRevert(FablesFeeEngine.ModuleNotAvailable.selector);
         sym.killCF(symPoolId);
@@ -754,7 +755,7 @@ contract FablesFeeEngineTest is Test, Deployers {
         vm.expectRevert(_unauthorized(stranger));
         hook.configureCF(poolId, 0, 256, 1000, 80, 60, 15);
         vm.expectRevert(_unauthorized(stranger));
-        hook.setCFActive(poolId, true);
+        hook.setCFActive(poolId, true, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         vm.expectRevert(_unauthorized(stranger));
         hook.killCF(poolId);
         vm.expectRevert(_unauthorized(stranger));
@@ -891,7 +892,7 @@ contract FablesFeeEngineTest is Test, Deployers {
         hook.configureCF(id, 0, 256, 1000, 80, 60, 15);
         uint256 before = hook.poolWord(id);
         vm.prank(poker);
-        hook.setCFActive(id, on);
+        hook.setCFActive(id, on, TickMath.MIN_TICK, TickMath.MAX_TICK, type(uint256).max);
         uint256 after_ = hook.poolWord(id);
         assertEq(after_ & ~PoolWordLib.CF_ON_MASK, before & ~PoolWordLib.CF_ON_MASK);
         assertEq(after_.cfOn(), on);

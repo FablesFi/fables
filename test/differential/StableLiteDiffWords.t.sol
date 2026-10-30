@@ -6,7 +6,9 @@ import {StableFeeCalculation} from "../../src/libraries/StableFeeCalculation.sol
 
 /// @notice Any-state differential: identical stored words give identical fees, reverts and state updates on StablePair,
 ///         the build under test and the typed twin. The state word's top 16 bits, unused by StablePair, are the Fables
-///         minimum fee: the Fables builds charge max(StablePair's fee, it) on every swap.
+///         minimum fee: the Fables builds charge max(StablePair's fee, it) on every swap. Beyond 10% from the reference
+///         Fables floors the decay target at its value at 10%: where that floor binds, the two Fables builds still match
+///         each other exactly and charge at least StablePair's capped fee, and the run stops comparing with StablePair.
 abstract contract StableLiteDiffWordsBase is StableTestBase {
     using PoolIdLibrary for PoolKey;
 
@@ -17,28 +19,45 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
 
     uint256 constant M40 = 0xffffffffff;
     uint256 constant M160 = (uint256(1) << 160) - 1;
-    uint256 constant Q96 = 1 << 96;
     uint256 constant MIN_FEE_PRICE_RATIO_X96 = 71305346262837903834189555302;
-    uint256 constant SQRT_MIN_FEE_PRICE_RATIO_X96 = 75162434512514379355924140470;
 
-    function _win(uint256 p, uint256 ref) internal pure returns (uint256) {
-        if (ref == 0) return 0;
-        if (StableFeeCalculation.calculatePriceRatioX96(p, ref) >= MIN_FEE_PRICE_RATIO_X96) return p;
-        return p < ref ? ref * SQRT_MIN_FEE_PRICE_RATIO_X96 / Q96 : ref * Q96 / SQRT_MIN_FEE_PRICE_RATIO_X96;
-    }
+    /// Set once a swap wrote a floored decaying fee: StablePair's state no longer matches the Fables builds'.
+    bool internal _diverged;
 
-    function _refOf(uint256 cfgW) internal pure returns (uint256) {
-        return (cfgW >> 56) & M160;
-    }
-
-    function _winSlot0(uint256 s0W, uint256 cfgW) internal pure returns (uint256) {
-        return (s0W & ~M160) | _win(s0W & M160, _refOf(cfgW));
-    }
-
-    function _winState(uint256 stW, uint256 cfgW) internal pure returns (uint256) {
+    /// True when the next fee on StablePair's words reads a target below its value at the 10% window edge (a new
+    /// block, outside the band, price ratio < 0.9). External so that words StablePair's math reverts on read as false.
+    function floorBinds(uint256 cfgW, uint256 stW, uint256 s0W, uint256 clock) external pure returns (bool) {
+        uint256 ref = (cfgW >> 56) & M160;
         uint256 cached = (stW >> 40) & M160;
-        if (cached == 0) return stW;
-        return (stW & ~(M160 << 40)) | (_win(cached, _refOf(cfgW)) << 40);
+        if (!(clock > ((stW >> 200) & M40) || cached == 0)) return false;
+        uint256 p = s0W & M160;
+        if (ref == 0 || p == 0) return false;
+        uint256 opt = (cfgW >> 24) & 0xffffff;
+        uint256 tm = (cfgW >> 48) & 0xff;
+        uint256 ratio = StableFeeCalculation.calculatePriceRatioX96(p, ref);
+        if (ratio >= MIN_FEE_PRICE_RATIO_X96) return false;
+        int256 close = StableFeeCalculation.calculateCloseBoundaryFee(ratio, opt);
+        if (close <= 0) return false;
+        uint256 target = StableFeeCalculation.calculateFarBoundaryFee(ratio, opt) - uint256(close) * tm / 100;
+        uint256 edge = StableFeeCalculation.calculateFarBoundaryFee(MIN_FEE_PRICE_RATIO_X96, opt)
+            - uint256(StableFeeCalculation.calculateCloseBoundaryFee(MIN_FEE_PRICE_RATIO_X96, opt)) * tm / 100;
+        return target < edge;
+    }
+
+    function _floorBinds(address sp) internal view returns (bool) {
+        (,, bytes32 pmSlot) = _slots(sp);
+        uint256 clock = sp == spArb ? _arbClock() : block.number;
+        try this.floorBinds(_cfgWord(sp), _stateWord(sp), uint256(vm.load(PM_ADDR, pmSlot)), clock) returns (bool b) {
+            return b;
+        } catch {
+            return false;
+        }
+    }
+
+    function _arbClock() internal view returns (uint256) {
+        (bool ok, bytes memory ret) = address(0x64).staticcall(abi.encodeWithSelector(0xa3b1b31d));
+        require(ok && ret.length == 32, "arbsys");
+        return abi.decode(ret, (uint256));
     }
 
     function setUp() public {
@@ -75,8 +94,6 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
     }
 
     function _put(address h, uint256 cfgW, uint256 stW, uint256 s0W) internal {
-        stW = _winState(stW, cfgW);
-        if (_isSP(h)) s0W = _winSlot0(s0W, cfgW);
         (bytes32 a, bytes32 b, bytes32 c) = _slots(h);
         vm.store(h, a, bytes32(cfgW));
         vm.store(h, b, bytes32(stW));
@@ -84,8 +101,7 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
     }
 
     function _setPrice(address h, uint256 s0W) internal {
-        (bytes32 a,, bytes32 c) = _slots(h);
-        if (_isSP(h)) s0W = _winSlot0(s0W, uint256(vm.load(h, a)));
+        (,, bytes32 c) = _slots(h);
         vm.store(PM_ADDR, c, bytes32(s0W));
     }
 
@@ -182,6 +198,7 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
     }
 
     function _cmpGetFee(address[3] memory P, string memory tag) internal view {
+        if (_diverged || _floorBinds(P[0])) return _cmpGetFeeFloored(P, tag);
         (bool ok0, bytes memory r0) = _getFeeRaw(P[0], _keyOf(P[0]));
         if (ok0 && r0.length == 64) {
             (uint24 a, uint24 b) = abi.decode(r0, (uint24, uint24));
@@ -193,7 +210,29 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
         }
     }
 
+    /// The floor binds (or StablePair's state no longer matches): the Fables builds match each other and, while
+    /// StablePair's words still match, charge at least its capped fee (then the minimum).
+    function _cmpGetFeeFloored(address[3] memory P, string memory tag) internal view {
+        (bool ok1, bytes memory r1) = _getFeeRaw(P[1], _keyOf(P[1]));
+        (bool ok2, bytes memory r2) = _getFeeRaw(P[2], _keyOf(P[2]));
+        if (ok1 != ok2 || keccak256(r1) != keccak256(r2)) _mismatch("getFee (floored)", tag, P[2], r1, r2);
+        if (_diverged) return;
+        (bool ok0, bytes memory r0) = _getFeeRaw(P[0], _keyOf(P[0]));
+        if (ok0 != ok1) _mismatch("getFee (floored) flag", tag, P[1], r0, r1);
+        if (ok0 && r0.length == 64) _assertFeesGe(P[0], r0, r1, tag);
+    }
+
+    function _assertFeesGe(address sp, bytes memory r0, bytes memory r1, string memory tag) internal view {
+        (uint24 a, uint24 b) = abi.decode(r0, (uint24, uint24));
+        (uint24 x, uint24 y) = abi.decode(r1, (uint24, uint24));
+        uint24 fa = _fables(sp, a);
+        uint24 fb = _fables(sp, b);
+        if (x < fa) revert(string.concat("floored getFee below StablePair 0for1 ", tag));
+        if (y < fb) revert(string.concat("floored getFee below StablePair 1for0 ", tag));
+    }
+
     function _cmpSwap(address[3] memory P, bool zfo, string memory tag) internal {
+        if (_diverged || _floorBinds(P[0])) return _cmpSwapFloored(P, zfo, tag);
         uint256 cfgB = _cfgWord(P[0]);
         // the expected minimum is read before StablePair's swap writes its state (the top bits stay)
         uint256 m = _stateWord(P[0]) >> 240;
@@ -214,6 +253,35 @@ abstract contract StableLiteDiffWordsBase is StableTestBase {
             if (_cfgWord(P[i]) != cfgB) revert(string.concat("swap wrote the config word ", tag));
         }
         if (ok0 && r0.length != 96) revert("beforeSwap return is not 96 bytes");
+    }
+
+    /// Floored swap: the Fables builds match each other (return, state, config untouched); while StablePair's words
+    /// still match, the fee is at least its capped fee (then the minimum); then the run leaves StablePair behind.
+    function _cmpSwapFloored(address[3] memory P, bool zfo, string memory tag) internal {
+        uint256 cfg1 = _cfgWord(P[1]);
+        uint256 cfg2 = _cfgWord(P[2]);
+        (bool ok1, bytes memory r1) = _swapCall(P[1], zfo);
+        (bool ok2, bytes memory r2) = _swapCall(P[2], zfo);
+        if (ok1 != ok2 || keccak256(r1) != keccak256(r2)) _mismatch("beforeSwap (floored)", tag, P[2], r1, r2);
+        if (_stateWord(P[1]) != _stateWord(P[2])) revert(string.concat("state word mismatch (floored) ", tag));
+        if (_cfgWord(P[1]) != cfg1 || _cfgWord(P[2]) != cfg2) {
+            revert(string.concat("swap wrote the config word ", tag));
+        }
+        if (!_diverged) {
+            uint256 m = _stateWord(P[0]) >> 240;
+            (bool ok0, bytes memory r0) = _swapCall(P[0], zfo);
+            if (ok0 != ok1) _mismatch("beforeSwap (floored) flag", tag, P[1], r0, r1);
+            if (ok0 && r0.length == 96) _assertSwapFeeGe(r0, r1, m, tag);
+            _diverged = true;
+        }
+    }
+
+    function _assertSwapFeeGe(bytes memory r0, bytes memory r1, uint256 m, string memory tag) internal pure {
+        (,, uint24 w0) = abi.decode(r0, (bytes4, int256, uint24));
+        (,, uint24 w1) = abi.decode(r1, (bytes4, int256, uint24));
+        uint24 f = _capped(w0 & 0x3fffff);
+        if (m > f) f = uint24(m);
+        if ((w1 & 0x3fffff) < f) revert(string.concat("floored fee below StablePair ", tag));
     }
 
     function _realistic(uint256 cfgW, uint256 stW, uint256 s0W, uint256 clockSeed, uint256 r)
