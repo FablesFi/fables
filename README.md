@@ -119,8 +119,13 @@ Role-to-function bindings are AccessManager configuration set at deployment; ADM
   gets the exact fee a router pays with `feeFor(poolId, zeroForOne, router)` (stable builds: `feeFor(key, zeroForOne,
   router)`), where `router` is the contract that calls `PoolManager.swap`.
 - **Claim fee:** charged at no more than the lowest rate in force since a range's last sync. Its recipient is hook-wide:
-  `setClaimFee` on any pool sets it for every pool and first pays the old recipient only for the currencies it lists in
-  `settleFirst`.
+  `setClaimFee` on any pool sets it for every pool.
+- **Sinks** (distributor, FABLES fee sink, claim-fee recipient) are chosen by ADMIN. A sink change first pays the
+  current sinks the booked pots of the currencies listed in `settleFirst`; everything else, including fees not yet synced
+  into the ledger, is paid to the sinks set when it is swept. Native revenue is paid in WETH.
+- **Rounding** favours the pool: fee splits never credit more than was collected. Holder accruals round down, the staked
+  cut carries its remainder to the next collection, and the claim fee rounds down in LPs' favour; remainders under one
+  base unit per collection or settle stay in the hook.
 - **Stable fee** (Uniswap's StablePair design): each pool has a reference price, and swaps that move the price away from it
   pay less than swaps that move it back. Inside the pool's optimal band both pay a small fee. Outside it, swaps away pay 0 and
   swaps back pay a fee that starts high and falls every block. Our changes: the fee is capped at 10%; once the price ratio to

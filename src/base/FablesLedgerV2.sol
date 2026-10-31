@@ -33,7 +33,8 @@ interface IBallotGate {
 /// @title FablesLedgerV2
 /// @notice Per-range LP ledger inside the hook, with ERC-6909 receipts minted 1:1 with liquidity units.
 /// @dev One PoolManager position per (pool, tickLower, tickUpper). Withdrawing and unstaking are never pausable or
-///      gated. Fees settle as ERC-6909 claims pulled by holders; staked shares' fees go to the distributor.
+///      gated. Fees settle as ERC-6909 claims pulled by holders; staked shares' fees go to the distributor
+///      (FABLES ones to `ffFeeSink`).
 abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTransient, IUnlockCallback {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
@@ -78,14 +79,15 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
     /// @notice Hook-wide claim-fee recipient; while zero no claim fee is taken.
     address public claimFeeRecipient;
     address public distributor;
-    /// @notice The FABLES token, cached from the distributor; never swept to it.
+    /// @notice The distributor's FABLES token (`ff()`), cached by `setDistributor`; staked-share fees in it go to
+    ///         `ffFeeSink`.
     address public distributorFF;
     /// @notice Receives FABLES-denominated staked-share fees.
     address public ffFeeSink;
 
     mapping(PoolId poolId => PoolClaimFee policy) internal _poolClaimFee;
 
-    /// @notice Claim-fee history length when each range last realized fees, i.e. where its current backlog opened.
+    /// @notice Claim-fee history length at each range's last sync, i.e. where its current backlog opened.
     mapping(uint256 rangeId => uint64 index) public claimFeeSyncIndex;
 
     /// @notice Hook-wide pause expiry; never blocks withdrawals or unstaking.
@@ -224,6 +226,8 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
         if (sink == address(poolManager)) revert InvalidSink();
     }
 
+    /// @dev Sweeps the listed currencies' booked pots to the current sinks. Fees not yet synced into the ledger are
+    ///      split at their next sync and paid to the sinks set when they are swept.
     function _settleSinks(Currency[] calldata currencies) internal {
         for (uint256 i = 0; i < currencies.length; i++) {
             _sweepDistributor(currencies[i]);
@@ -383,7 +387,8 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
         }
     }
 
-    /// @dev Pays `msg.sender` this call's unspent `msg.value` (the balance delta); force-sent ETH strands.
+    /// @dev Pays `msg.sender` the hook's native balance gain over this call: its unspent `msg.value`, plus any ETH that
+    ///      reached the hook during the call. ETH already in the hook stays there.
     // slither-disable-next-line arbitrary-send-eth
     function _refundNative() internal {
         uint256 pre = _foreignNative();
@@ -524,7 +529,8 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
         emit FeesClaimed(msg.sender, id, amount0, amount1);
     }
 
-    /// @notice Stakes unstaked receipts: their future fees route to the distributor (voters) instead of the holder.
+    /// @notice Stakes unstaked receipts: their future fees route to the distributor (voters; FABLES to `ffFeeSink`)
+    ///         instead of the holder.
     /// @param minGaugeWeight Least gauge weight the caller accepts; 0 = no bound.
     /// @dev Requires a ballot gate reporting the pool's gauge as earning; both checks run at entry only.
     // slither-disable-next-line reentrancy-no-eth
@@ -566,7 +572,7 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
         emit Unstaked(msg.sender, id, shares);
     }
 
-    /// @notice Pushes accumulated staked-share fees to the distributor. Callable by anyone.
+    /// @notice Pushes accumulated staked-share fees to the distributor (FABLES to `ffFeeSink`). Callable by anyone.
     function sweepDistributor(Currency currency) external nonReentrant whenNotPaused {
         _sweepDistributor(currency);
     }
@@ -752,7 +758,9 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
     }
 
     /// @notice The rate charged on a backlog that opened at history index `sinceIndex`: the lowest rate in force
-    ///         since then (zero while no recipient). A cut applies to the whole backlog; a raise only to later ones.
+    ///         since then (zero while no recipient), or the pool's all-time lowest rate when that is lower and the
+    ///         backlog spans more than 32 history entries. A cut applies to the whole backlog; a raise only to later
+    ///         ones.
     /// @dev Walks at most MAX_CLAIM_FEE_WALK entries, then uses the all-time minimum. Anyone can force a sync, so a
     ///      backlog can be priced just before a public cut.
     function claimFeeFor(PoolId poolId, uint64 sinceIndex) public view returns (uint16) {
@@ -765,7 +773,7 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
         return _poolClaimFee[poolId].bps;
     }
 
-    /// @notice The lowest rate this pool has ever stood at (the bounded walk's fallback).
+    /// @notice The lowest rate in this pool's claim-fee history (the bounded walk's fallback).
     function claimFeeAllTimeMin(PoolId poolId) external view returns (uint16) {
         return _poolClaimFee[poolId].allTimeMin;
     }

@@ -73,11 +73,11 @@ struct UserPosition {
     uint256 checkpoint1X128;
     uint256 stakedCheckpoint0X128;
     uint256 stakedCheckpoint1X128;
-    uint256 forgone0; // cumulative fees given up by staked shares
+    uint256 forgone0; // running total of `FeesForgone` (rounded down)
     uint256 forgone1;
 }
 
-/// @notice Fees a holder's staked shares gave up since their last settle (their emission weight).
+/// @notice Fees a holder's staked shares gave up since their last settle (rounded down per holder).
 event FeesForgone(address indexed owner, uint256 indexed rangeId, uint256 amount0, uint256 amount1);
 
 /// @dev Stored on first deposit so paths without a PoolKey (ERC-6909 transfers) can sync fees.

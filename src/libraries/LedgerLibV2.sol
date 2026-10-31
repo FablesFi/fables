@@ -127,7 +127,8 @@ library LedgerLibV2 {
             return (p.fee0, p.fee1);
         }
 
-        // claim fee: at the rate in force while the fees accrued, on the unstaked residue only, floored
+        // claim fee: at the backlog's rate (`claimFeeFor`), on the unstaked residue only, rounded down (the remainder
+        // stays with LPs)
         uint256 net0 = p.fee0 - stakedCut0;
         uint256 net1 = p.fee1 - stakedCut1;
         if (feeBps != 0 && p.claimFeeRecipient != address(0)) {
@@ -148,7 +149,8 @@ library LedgerLibV2 {
     }
 
     /// @notice Claim-fee rate (bps) for a backlog opened at history index `sinceIndex`: the lowest rate in force since
-    ///         then, capped by the current one (0 without a recipient).
+    ///         then, capped by the current one (0 without a recipient); if the backlog spans more than 32 history
+    ///         entries, the pool's all-time lowest rate when that is lower.
     function claimFeeFor(
         ClaimFeeChange[] storage claimFeeHistory,
         uint64 sinceIndex,
@@ -302,7 +304,7 @@ library LedgerLibV2 {
         }
     }
 
-    /// @notice Checkpoints a holder's accrued fees and emission weight (`FeesForgone`) at the range's current levels.
+    /// @notice Checkpoints a holder's accrued fees and forgone total (`FeesForgone`) at the range's current levels.
     /// @dev Called before every change to the holder's share count.
     function settleUser(
         RangeState storage range,

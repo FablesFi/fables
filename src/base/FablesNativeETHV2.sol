@@ -17,8 +17,8 @@ interface IWETH9 {
 
 /// @title FablesNativeETHV2
 /// @notice Native-ETH currency0 support for the ledger; ERC20 pools keep working on the same hook.
-/// @dev Native revenue sweeps are paid in WETH; LP withdrawals and claims in native ETH. ETH forced in (selfdestruct,
-///      coinbase) is never refunded or rescued.
+/// @dev Native revenue sweeps are paid in WETH; LP withdrawals and claims in native ETH. ETH forced in earlier
+///      (selfdestruct, coinbase) stays in the hook: a deposit refunds only the balance gain of its own call.
 abstract contract FablesNativeETHV2 is FablesLedgerV2 {
     using CurrencyLibrary for Currency;
     using SafeERC20 for IERC20;
