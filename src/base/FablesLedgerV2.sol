@@ -759,8 +759,8 @@ abstract contract FablesLedgerV2 is FablesHookCore, ERC6909, ReentrancyGuardTran
 
     /// @notice The rate charged on a backlog that opened at history index `sinceIndex`: the lowest rate in force
     ///         since then (zero while no recipient), or the pool's all-time lowest rate when that is lower and the
-    ///         backlog spans more than 32 history entries. A cut applies to the whole backlog; a raise only to later
-    ///         ones.
+    ///         backlog spans more than 32 history entries. A cut lowers backlogs still unsynced when it lands; a raise
+    ///         applies only to later ones.
     /// @dev Walks at most MAX_CLAIM_FEE_WALK entries, then uses the all-time minimum. Anyone can force a sync, so a
     ///      backlog can be priced just before a public cut.
     function claimFeeFor(PoolId poolId, uint64 sinceIndex) public view returns (uint16) {
