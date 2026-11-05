@@ -1,0 +1,54 @@
+name: Olympix
+
+on:
+  push:
+    branches: [main, olympix]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Mask the account email
+        run: echo "::add-mask::$OLYMPIX_ACCOUNT_EMAIL"
+        env:
+          OLYMPIX_ACCOUNT_EMAIL: ${{ secrets.OLYMPIX_ACCOUNT_EMAIL }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      - uses: olympix/integrated-security@79cbce2446c47a8381bef23d09528e9ef08cc066
+        env:
+          OLYMPIX_API_TOKEN: ${{ secrets.OLYMPIX_API_TOKEN }}
+        with:
+          args: -p src --output-format sarif --output-path ./
+      - uses: github/codeql-action/upload-sarif@9418214df1f2c4b8128c770156c409013b07d6b9 # v3
+        with:
+          sarif_file: olympix.sarif
+
+  mutation-tests:
+    # results by email, uses credits: runs only when the head commit message contains OPIX-GEN-MUTATION-TESTS
+    if: contains(github.event.head_commit.message, 'OPIX-GEN-MUTATION-TESTS')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mask the account email
+        run: echo "::add-mask::$OLYMPIX_ACCOUNT_EMAIL"
+        env:
+          OLYMPIX_ACCOUNT_EMAIL: ${{ secrets.OLYMPIX_ACCOUNT_EMAIL }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1
+      - uses: olympix/mutation-test-generator@76c2b4b27c40e5f2d4e699ec1f9cacb71783f6f0
+        env:
+          OLYMPIX_API_TOKEN: ${{ secrets.OLYMPIX_API_TOKEN }}
+        with:
+          args: >-
+            --confirm-all -t 500
+            -p src/base/FablesLedgerV2.sol -p src/libraries/LedgerLibV2.sol -p src/base/FablesStableFee.sol
+            -p src/base/FablesFeeEngine.sol -p src/libraries/FeeRef.sol
