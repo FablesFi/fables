@@ -143,8 +143,9 @@ Role-to-function bindings are AccessManager configuration set at deployment; ADM
 ## Build and test
 
 Tests live in `test/` (one README per folder): `unit`, `invariant`, `differential` (assembly entry vs its Solidity twin;
-stable fee vs Uniswap's StablePair), `regression`, `fullcycle`, `gas`, `fork` (Robinhood Chain), `halmos` (run with halmos) and `external` (OpenZeppelin
-uniswap-hooks invariants and an ERC-6909 conformance suite, adapted).
+stable fee vs Uniswap's StablePair), `regression`, `fullcycle`, `gas`, `fork` (Robinhood Chain), `halmos` (run with halmos), `external` (OpenZeppelin
+uniswap-hooks invariants and an ERC-6909 conformance suite, adapted) and `olympix` (skeletons for Olympix unit-test
+generation).
 
 ```bash
 git submodule update --init --recursive
