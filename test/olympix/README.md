@@ -8,6 +8,10 @@ Skeletons for Olympix unit-test generation. Each `<Contract>.t.sol` targets one 
 - `OlympixStableFixture`: a Stable Lite build with a stable pool at its reference and ledger liquidity. Used by both
   Stable Lite builds and `FablesStableFee`.
 
+`FablesLedgerV2.t.sol` also holds the tests added after Olympix mutation testing: admin-only setters, pause bounds,
+sweeps while paused, one-sided fee payouts, the ledger's events, and reentry from a native payout
+(`FablesLedgerV2ReentryOlympixTest`, on FablesHookETH).
+
 ```
 forge test --match-path "test/olympix/**"
 ```
