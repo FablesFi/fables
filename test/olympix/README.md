@@ -9,8 +9,10 @@ Skeletons for Olympix unit-test generation. Each `<Contract>.t.sol` targets one 
   Stable Lite builds and `FablesStableFee`.
 
 `FablesLedgerV2.t.sol` also holds the tests added after Olympix mutation testing: admin-only setters, pause bounds,
-sweeps while paused, one-sided fee payouts, the ledger's events, and reentry from a native payout
-(`FablesLedgerV2ReentryOlympixTest`, on FablesHookETH).
+sweeps (while paused, paid and reported, silent with nothing owed), one-sided fee payouts, the ledger's events, and
+reentry from a native payout (`FablesLedgerV2ReentryOlympixTest`, on FablesHookETH). `LedgerLibV2.t.sol` drives the
+ledger library on its own storage (`AccWrapHarness`): fees on a range without shares, per-token staked remainders,
+one-sided claim fees and forgone fees. `FablesFeeEngine.t.sol` pins the continuation-fee modes.
 
 ```
 forge test --match-path "test/olympix/**"

@@ -9,7 +9,7 @@ import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
 
 import {FablesLedgerV2} from "../../src/base/FablesLedgerV2.sol";
-import {UserPosition} from "../../src/base/LedgerTypesV2.sol";
+import {ClaimFeeSwept, DistributorSwept, UserPosition} from "../../src/base/LedgerTypesV2.sol";
 import {OlympixHookFixture} from "./OlympixHookFixture.sol";
 import {OlympixUnitTest} from "./OlympixUnitTest.sol";
 
@@ -174,6 +174,38 @@ contract FablesLedgerV2OlympixTest is OlympixHookFixture, OlympixUnitTest("Fable
         emit FablesLedgerV2.Withdrawn(carol, rid, LIQ);
         ledger.withdraw(key, LO, HI, LIQ, carol, 0, 0, block.timestamp);
         vm.stopPrank();
+    }
+
+    /// @dev After a sync books the staked cut and the claim fee, each sweep pays its sink and reports it; with nothing
+    ///      owed both sweeps are silent no-ops.
+    function test_sweepsPayAndReport() public {
+        vm.prank(alice);
+        ledger.claimFees(key, LO, HI, alice, 10_000); // syncs the range
+        IERC20Minimal token = IERC20Minimal(Currency.unwrap(currency0));
+        address dist = ledger.distributor();
+        uint256 owedD = ledger.distributorOwed(currency0);
+        uint256 owedC = ledger.claimFeeOwed(currency0);
+        assertGt(owedD, 0);
+        assertGt(owedC, 0);
+
+        uint256 before = token.balanceOf(dist);
+        vm.expectEmit(hookAddr);
+        emit DistributorSwept(currency0, dist, owedD);
+        ledger.sweepDistributor(currency0);
+        assertEq(ledger.distributorOwed(currency0), 0);
+        assertEq(token.balanceOf(dist) - before, owedD);
+
+        before = token.balanceOf(claimFeeRecipient);
+        vm.expectEmit(hookAddr);
+        emit ClaimFeeSwept(currency0, claimFeeRecipient, owedC);
+        ledger.sweepClaimFee(currency0);
+        assertEq(ledger.claimFeeOwed(currency0), 0);
+        assertEq(token.balanceOf(claimFeeRecipient) - before, owedC);
+
+        vm.recordLogs();
+        ledger.sweepClaimFee(currency0);
+        ledger.sweepDistributor(currency0);
+        assertEq(vm.getRecordedLogs().length, 0, "nothing owed: no transfer, no event");
     }
 
     /// @dev A fresh LP earns fees in one currency only (single-direction swap), then withdraws and claims: the
