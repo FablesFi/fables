@@ -145,7 +145,7 @@ Role-to-function bindings are AccessManager configuration set at deployment; ADM
 Tests live in `test/` (one README per folder): `unit`, `invariant`, `differential` (assembly entry vs its Solidity twin;
 stable fee vs Uniswap's StablePair), `regression`, `fullcycle`, `gas`, `fork` (Robinhood Chain), `halmos` (run with halmos), `external` (OpenZeppelin
 uniswap-hooks invariants and an ERC-6909 conformance suite, adapted) and `olympix` (skeletons for Olympix unit-test
-generation).
+generation). The suite runs on Foundry v1.9.0 (v1.7.1 passes too).
 
 ```bash
 git submodule update --init --recursive

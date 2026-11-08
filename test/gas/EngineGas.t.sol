@@ -13,7 +13,8 @@ import {AccessManager} from "@openzeppelin/contracts/access/manager/AccessManage
 
 import {EngineHarness} from "../utils/EngineHarness.sol";
 
-/// @notice Gas of the poke and admin paths, with loose ceilings.
+/// @notice Gas of the poke and admin paths, with loose ceilings. On Foundry 1.9+ each top-level call runs as its own
+///         transaction and starts cold, as it does on chain.
 contract EngineGasTest is Test, Deployers {
     using PoolIdLibrary for PoolKey;
 
@@ -85,13 +86,13 @@ contract EngineGasTest is Test, Deployers {
         uint256 disc = g0 - gasleft();
         emit log_named_uint("setDiscount (one pool, new entry)", disc);
 
-        assertLt(pokeRenew, 40_000, "poke renewal");
-        assertLt(pokeRaise, 45_000, "poke raise");
-        assertLt(clear_, 40_000, "clear");
-        assertLt(reconfigure, 50_000, "reconfigure");
-        assertLt(configureNew, 120_000, "configure new");
-        assertLt(cf, 90_000, "configureCF");
-        assertLt(cfOn, 40_000, "setCFActive");
-        assertLt(disc, 80_000, "setDiscount");
+        assertLt(pokeRenew, 65_000, "poke renewal");
+        assertLt(pokeRaise, 70_000, "poke raise");
+        assertLt(clear_, 55_000, "clear");
+        assertLt(reconfigure, 80_000, "reconfigure");
+        assertLt(configureNew, 135_000, "configure new");
+        assertLt(cf, 95_000, "configureCF");
+        assertLt(cfOn, 65_000, "setCFActive");
+        assertLt(disc, 85_000, "setDiscount");
     }
 }

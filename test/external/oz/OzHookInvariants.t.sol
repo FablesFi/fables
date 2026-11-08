@@ -98,14 +98,10 @@ abstract contract OzHookInvariants is Test, Deployers {
 
     function _createPool(bool stable, PoolKey memory key) internal {
         if (stable) {
-            FablesStableHookLite(hook)
-                .configureStablePool(
-                    key,
-                    SQRT_PRICE_1_1,
-                    StableFeeConfig({
-                    k: 11_744_051, optimalFeeE6: 50, targetMultiplier: 100, referenceSqrtPriceX96: SQRT_PRICE_1_1
-                })
-                );
+            StableFeeConfig memory cfg = StableFeeConfig({
+                k: 11_744_051, optimalFeeE6: 50, targetMultiplier: 100, referenceSqrtPriceX96: SQRT_PRICE_1_1
+            });
+            FablesStableHookLite(hook).configureStablePool(key, SQRT_PRICE_1_1, cfg);
             return;
         }
         FablesFeeEngine(hook).setCategory(1, 0, 100_000, 100_000, "ANY");

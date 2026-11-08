@@ -44,8 +44,12 @@ contract MockArbSys {
 ///         construction).
 library ArbSysHelper {
     address internal constant ARB_SYS = address(0x64);
+    /// @dev Foundry's local chain id. On an Arbitrum chain id (Robinhood Chain's included) Foundry answers 0x64 itself
+    ///      with block.number and ignores code etched there, so the stand-in runs under this id.
+    uint256 internal constant LOCAL_CHAIN_ID = 31_337;
 
     function install(Vm vm, uint256 startBlock) internal returns (MockArbSys) {
+        vm.chainId(LOCAL_CHAIN_ID);
         vm.etch(ARB_SYS, type(MockArbSys).runtimeCode);
         MockArbSys(ARB_SYS).setBlockNumber(startBlock);
         MockArbSys(ARB_SYS).setMode(MockArbSys.Mode.Normal);

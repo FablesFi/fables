@@ -31,19 +31,21 @@ contract LedgerSeamInertnessTest is Test, Deployers {
     uint128 constant DEPOSIT_LIQ = 5e17;
     address constant HOOK_ADDR = address(uint160(0x4444 << 144));
 
+    /// @dev Gas per ledger door before the seam, measured with this test on Foundry 1.9.0, where each top-level call
+    ///      runs as its own transaction and starts cold. The seam may add at most `GAS_BUDGET` to each.
     uint256 constant GAS_BUDGET = 100;
-    uint256 constant BASE_DEPOSIT_NEW_RANGE = 365_670;
-    uint256 constant BASE_DEPOSIT_FEES_PENDING = 374_970;
-    uint256 constant BASE_DEPOSIT_QUIET = 88_457;
-    uint256 constant BASE_STAKE_FEES_PENDING = 81_702;
-    uint256 constant BASE_UNSTAKE_FEES_PENDING = 263_492;
-    uint256 constant BASE_TRANSFER_QUIET = 152_667;
-    uint256 constant BASE_CLAIM_FEES_PENDING = 108_831;
-    uint256 constant BASE_WITHDRAW_FEES_PENDING = 141_176;
-    uint256 constant BASE_SWEEP_CLAIM_FEE = 45_528;
-    uint256 constant BASE_SWEEP_DISTRIBUTOR = 43_835;
-    uint256 constant BASE_WITHDRAW_AND_CLAIM = 197_500;
-    uint256 constant BASE_WITHDRAW_QUIET_EMPTYING = 84_232;
+    uint256 constant BASE_DEPOSIT_NEW_RANGE = 399_534;
+    uint256 constant BASE_DEPOSIT_FEES_PENDING = 527_834;
+    uint256 constant BASE_DEPOSIT_QUIET = 244_521;
+    uint256 constant BASE_STAKE_FEES_PENDING = 231_314;
+    uint256 constant BASE_UNSTAKE_FEES_PENDING = 408_776;
+    uint256 constant BASE_TRANSFER_QUIET = 250_611;
+    uint256 constant BASE_CLAIM_FEES_PENDING = 313_023;
+    uint256 constant BASE_WITHDRAW_FEES_PENDING = 361_824;
+    uint256 constant BASE_SWEEP_CLAIM_FEE = 94_860;
+    uint256 constant BASE_SWEEP_DISTRIBUTOR = 101_167;
+    uint256 constant BASE_WITHDRAW_AND_CLAIM = 419_500;
+    uint256 constant BASE_WITHDRAW_QUIET_EMPTYING = 234_892;
 
     AccessManager authority;
     TestHookV2 hook;

@@ -44,6 +44,8 @@ jobs:
         with:
           submodules: recursive
       - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1
+        with:
+          version: v1.9.0
       - uses: olympix/mutation-test-generator@76c2b4b27c40e5f2d4e699ec1f9cacb71783f6f0
         env:
           OLYMPIX_API_TOKEN: ${{ secrets.OLYMPIX_API_TOKEN }}

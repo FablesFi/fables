@@ -288,16 +288,11 @@ contract FullDifferentialTest is FullTestBase {
     function test_gate_typedCallFromThePoolManagerIsServed() public {
         PoolKey memory key = _key(3);
         hook.__setWord(key.toId(), _configuredWord(0, 1_234, 4_321, 0, 50_000));
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: false, amountSpecified: -1e18, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+        });
         vm.prank(address(manager));
-        (bytes4 sel,, uint24 fee) = IHooks(hookAddr)
-            .beforeSwap(
-                address(0xBEEF),
-                key,
-                IPoolManager.SwapParams({
-                zeroForOne: false, amountSpecified: -1e18, sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
-            }),
-                ""
-            );
+        (bytes4 sel,, uint24 fee) = IHooks(hookAddr).beforeSwap(address(0xBEEF), key, params, "");
         assertEq(sel, IHooks.beforeSwap.selector);
         assertEq(fee, 4_321 | LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }

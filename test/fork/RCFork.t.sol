@@ -60,8 +60,8 @@ contract RCForkTest is RCBytecodeHarness, RCForkHelpers {
         assertApproxEqRel(uint256(int256(d.amount1())), 100e6, 0.02e18, "near parity, ~100 USDG out");
     }
 
-    /// @notice Stable Lite on the real pair: an in-band first-of-block swap against a hookless 50-pip pool. Foundry
-    ///         does not run the ArbSys precompile on a fork, so the hook latches the block.number clock here.
+    /// @notice Stable Lite on the real pair: an in-band first-of-block swap against a hookless 50-pip pool. The hook
+    ///         finds no code at 0x64 on a fork, so it latches the block.number clock here.
     function test_stableLiteInBandFirstOfBlock() public {
         AccessManager authority = new AccessManager(address(this));
         address lite = flagged("fork.stableLite", FLAGS_STABLE_LITE);
