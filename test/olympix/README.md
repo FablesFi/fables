@@ -4,7 +4,8 @@ Skeletons for Olympix unit-test generation. Each `<Contract>.t.sol` targets one 
 `OlympixUnitTest("<Contract>")`) and has a `setUp()` that deploys it as the other suites do:
 
 - `OlympixHookFixture`: a FablesHook build with a live pool, the ledger wired to a distributor and ballot gate, two LPs
-  (one staked) and a swap each way. Used by the four FablesHook builds, `FablesLedgerV2` and `FablesFeeEngine`.
+  (one staked) and a swap each way. Used by the four FablesHook builds, `FablesLedgerV2`, `FablesFeeEngine` and
+  `FablesNativeETHV2`.
 - `OlympixStableFixture`: a Stable Lite build with a stable pool at its reference and ledger liquidity. Used by both
   Stable Lite builds and `FablesStableFee`.
 
@@ -12,7 +13,9 @@ Skeletons for Olympix unit-test generation. Each `<Contract>.t.sol` targets one 
 sweeps (while paused, paid and reported, silent with nothing owed), one-sided fee payouts, the ledger's events, and
 reentry from a native payout (`FablesLedgerV2ReentryOlympixTest`, on FablesHookETH). `LedgerLibV2.t.sol` drives the
 ledger library on its own storage (`AccWrapHarness`): fees on a range without shares, per-token staked remainders,
-one-sided claim fees and forgone fees. `FablesFeeEngine.t.sol` pins the continuation-fee modes.
+one-sided claim fees and forgone fees. `FablesFeeEngine.t.sol` pins the continuation-fee modes, the discount
+direction constants and the full fee for an account left out of a rebuilt discount filter. `FablesNativeETHV2.t.sol`
+(on FablesHookETH) checks that native revenue sweeps pay WETH and report both the sweep and the wrap.
 
 ```
 forge test --match-path "test/olympix/**"
