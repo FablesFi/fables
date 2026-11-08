@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {console} from "forge-std/console.sol";
 import {PoolKey} from "v4-core/src/types/PoolKey.sol";
+import {PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -16,6 +17,8 @@ import {StableFeeConfig} from "../../src/base/FablesStableFee.sol";
 
 /// @notice Read-only Robinhood Chain fork tests on real USDe / USDG. Skipped unless `RC_RPC_URL` is set.
 contract RCForkTest is RCBytecodeHarness, RCForkHelpers {
+    using PoolIdLibrary for PoolKey;
+
     uint24 internal constant K07 = 11_744_051;
     uint24 internal constant OPT_50 = 50;
     uint8 internal constant TM_100 = 100;
@@ -39,7 +42,7 @@ contract RCForkTest is RCBytecodeHarness, RCForkHelpers {
 
     function test_pinnedBlockAndTokens() public view {
         assertEq(block.chainid, RCAddresses.CHAIN_ID);
-        assertEq(block.number, forkBlock);
+        assertEq(rcBlock(), forkBlock);
         assertEq(IERC20Metadata(RCAddresses.USDE).decimals(), RCAddresses.USDE_DECIMALS, "USDe 18");
         assertEq(IERC20Metadata(RCAddresses.USDG).decimals(), RCAddresses.USDG_DECIMALS, "USDG 6");
         assertTrue(RCAddresses.USDE < RCAddresses.USDG, "USDe is currency0");
@@ -60,8 +63,27 @@ contract RCForkTest is RCBytecodeHarness, RCForkHelpers {
         assertApproxEqRel(uint256(int256(d.amount1())), 100e6, 0.02e18, "near parity, ~100 USDG out");
     }
 
-    /// @notice Stable Lite on the real pair: an in-band first-of-block swap against a hookless 50-pip pool. The hook
-    ///         finds no code at 0x64 on a fork, so it latches the block.number clock here.
+    /// @notice Stable Lite against the chain's ArbSys (code at 0x64). Where Foundry runs ArbSys on the fork (1.9+) the
+    ///         hook latches it; either way the pool records Robinhood Chain's block, not Ethereum's.
+    function test_stableLiteClockIsTheChainsBlock() public {
+        assertGt(address(0x64).code.length, 0, "ArbSys has code on the chain");
+        AccessManager authority = new AccessManager(address(this));
+        address lite = flagged("fork.stableLiteClock", FLAGS_STABLE_LITE);
+        deployCodeTo("FablesStableHookLite.sol:FablesStableHookLite", abi.encode(PM_ADDR, address(authority)), lite);
+        (bool ok, bytes memory ret) = address(0x64).staticcall{gas: 50_000}(abi.encodeWithSelector(0xa3b1b31d));
+        assertEq(FablesStableHookLite(lite).USE_ARB_SYS(), ok && ret.length == 32, "latched iff ArbSys answers");
+        PoolKey memory kl = usdeUsdgKey(lite, 0, 1);
+        uint160 ref = parityPriceUsdeUsdg();
+        StableFeeConfig memory cfg =
+            StableFeeConfig({k: K07, optimalFeeE6: OPT_50, targetMultiplier: TM_100, referenceSqrtPriceX96: ref});
+        FablesStableHookLite(lite).configureStablePool(kl, ref, cfg);
+        (,, uint40 blk) = FablesStableHookLite(lite).feeState(kl.toId());
+        assertEq(blk, rcBlock(), "state block = Robinhood Chain's block");
+        assertEq(blk, forkBlock);
+    }
+
+    /// @notice Stable Lite on the real pair: an in-band first-of-block swap against a hookless 50-pip pool. 0x64 is
+    ///         emptied so the hook latches the block.number clock, which `vm.roll` drives.
     function test_stableLiteInBandFirstOfBlock() public {
         AccessManager authority = new AccessManager(address(this));
         address lite = flagged("fork.stableLite", FLAGS_STABLE_LITE);

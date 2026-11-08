@@ -55,6 +55,13 @@ abstract contract RCForkHelpers is Test {
         liqRC = new LiqHelper(pmRC);
     }
 
+    /// @notice Robinhood Chain's own block number. Foundry 1.9+ runs ArbSys on the fork and, as on Arbitrum chains,
+    ///         gives `block.number` the Ethereum block; earlier versions give the chain's block in `block.number`.
+    function rcBlock() internal view returns (uint256) {
+        (bool ok, bytes memory ret) = address(0x64).staticcall{gas: 50_000}(abi.encodeWithSelector(0xa3b1b31d));
+        return ok && ret.length == 32 ? abi.decode(ret, (uint256)) : block.number;
+    }
+
     /// @notice Give `to` `amount` of a real token and set the Permit2 -> Universal Router allowances.
     function fundRC(address token, address to, uint256 amount) internal {
         deal(token, to, amount);
